@@ -39,6 +39,7 @@ sealed class Screen {
     data class Search(val day: String) : Screen()
     object AiChat : Screen()
     data class CalculationDetail(val type: String, val day: String, val initialMode: String? = null) : Screen()
+    data class CustomerAuditLog(val customerId: Int) : Screen()
 }
 
 data class ChatMessage(
@@ -675,8 +676,53 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val _qrImageUri = MutableStateFlow(prefs.getString("qr_image_uri", "") ?: "")
     val qrImageUri = _qrImageUri.asStateFlow()
 
-    private val _businessName = MutableStateFlow(prefs.getString("business_name", "Muneeswaran P") ?: "Muneeswaran P")
+    private val _businessName = MutableStateFlow(
+        run {
+            val saved = prefs.getString("business_name", "MD Finance") ?: "MD Finance"
+            if (!prefs.getBoolean("business_name_md_finance_v1", false)) {
+                val migrated = if (saved.trim().equals("Muneeswaran P", ignoreCase = true) || saved.isBlank()) "MD Finance" else saved
+                prefs.edit()
+                    .putString("business_name", migrated)
+                    .putBoolean("business_name_md_finance_v1", true)
+                    .apply()
+                migrated
+            } else {
+                saved
+            }
+        }
+    )
     val businessName = _businessName.asStateFlow()
+
+    val defaultStatementHeaderTitle = "{business}"
+    val defaultStatementHeaderSubtitle = "COLLECTION STATEMENT REPORT"
+    val defaultStatementCustomerBox = "Name: {customer}\nPhone: {phone}\nCollection Day: {day}"
+    val defaultStatementLoanBox = "Date of Dispersal: {start_date}\nTotal Contract Value: ₹{total_due}\nAmt Paid: ₹{paid_amt}\nOutstanding: ₹{balance}"
+    val defaultStatementFooter = "THANK YOU\nPlease retain this statement for your verification."
+
+    private val _statementHeaderTitle = MutableStateFlow(
+        prefs.getString("statement_header_title", defaultStatementHeaderTitle) ?: defaultStatementHeaderTitle
+    )
+    val statementHeaderTitle = _statementHeaderTitle.asStateFlow()
+
+    private val _statementHeaderSubtitle = MutableStateFlow(
+        prefs.getString("statement_header_subtitle", defaultStatementHeaderSubtitle) ?: defaultStatementHeaderSubtitle
+    )
+    val statementHeaderSubtitle = _statementHeaderSubtitle.asStateFlow()
+
+    private val _statementCustomerBoxTemplate = MutableStateFlow(
+        prefs.getString("statement_customer_box", defaultStatementCustomerBox) ?: defaultStatementCustomerBox
+    )
+    val statementCustomerBoxTemplate = _statementCustomerBoxTemplate.asStateFlow()
+
+    private val _statementLoanBoxTemplate = MutableStateFlow(
+        prefs.getString("statement_loan_box", defaultStatementLoanBox) ?: defaultStatementLoanBox
+    )
+    val statementLoanBoxTemplate = _statementLoanBoxTemplate.asStateFlow()
+
+    private val _statementFooterTemplate = MutableStateFlow(
+        prefs.getString("statement_footer_text", defaultStatementFooter) ?: defaultStatementFooter
+    )
+    val statementFooterTemplate = _statementFooterTemplate.asStateFlow()
 
     private val _statementCustomizationCode = MutableStateFlow(
         prefs.getString(
@@ -686,7 +732,33 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     )
     val statementCustomizationCode = _statementCustomizationCode.asStateFlow()
 
-    private val _smsPaused = MutableStateFlow(prefs.getBoolean("sms_paused", false))
+    private val _smsPaused = MutableStateFlow(
+        run {
+            if (!prefs.getBoolean("sms_default_off_v2_applied", false)) {
+                prefs.edit()
+                    .putBoolean("sms_paused", true)
+                    .putBoolean("sms_default_off_v2_applied", true)
+                    .apply()
+                viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    try {
+                        val existing = db.collectionDao().getAllCustomersOnce()
+                        existing.forEach { c ->
+                            if (c.smsWeeklyReminder || c.smsConfirmationOfEntry || c.autoWeeklySms) {
+                                db.collectionDao().updateCustomer(
+                                    c.copy(
+                                        smsWeeklyReminder = false,
+                                        smsConfirmationOfEntry = false,
+                                        autoWeeklySms = false
+                                    )
+                                )
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+            prefs.getBoolean("sms_paused", true)
+        }
+    )
     val smsPaused = _smsPaused.asStateFlow()
 
     private val _fontSizeScale = MutableStateFlow(prefs.getFloat("font_size_scale", 1.15f))
@@ -740,6 +812,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     private val _aiEnabled = MutableStateFlow(prefs.getBoolean("ai_enabled", true))
     val aiEnabled = _aiEnabled.asStateFlow()
+
+    private val _showOverdueDots = MutableStateFlow(prefs.getBoolean("show_overdue_dots", true))
+    val showOverdueDots = _showOverdueDots.asStateFlow()
 
     private val _aiSpeechLanguage = MutableStateFlow(prefs.getString("ai_speech_language", "") ?: "")
     val aiSpeechLanguage = _aiSpeechLanguage.asStateFlow()
@@ -809,6 +884,14 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun setAiEnabled(enabled: Boolean) {
         _aiEnabled.value = enabled
         prefs.edit().putBoolean("ai_enabled", enabled).apply()
+    }
+
+    fun setShowOverdueDots(enabled: Boolean) {
+        val old = _showOverdueDots.value
+        _showOverdueDots.value = enabled
+        prefs.edit().putBoolean("show_overdue_dots", enabled).apply()
+        markDirty()
+        logPreferenceChange("show_overdue_dots", old.toString(), enabled.toString())
     }
 
     fun setAiSpeechLanguage(lang: String) {
@@ -1148,47 +1231,170 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     fun getDefaultNewLoanTemplate(lang: String): String {
         return when (lang) {
-            "Tamil" -> "அன்புள்ள {name},\nபுதிய கடன் கணக்கு தொடங்கப்பட்டுள்ளது,\nவார தவணை: ₹{weekly}, மொத்த நிலுவை: ₹{outstanding},\nசெலுத்த வேண்டிய முகவரி: {upi_link}\nநன்றி!"
-            "Hindi" -> "प्रिय {name},\nनया ऋण खाता बनाया गया है,\nसाप्ताहिक किस्त: ₹{weekly}, कुल बकाया: ₹{outstanding},\nभुगतान लिंक: {upi_link}\nधन्यवाद!"
-            "Telugu" -> "ప్రియమైన {name},\nకొత్త రుణ ఖాతా సృష్టించబడింది,\nవారపు వాయిదా: ₹{weekly}, బకాయి: ₹{outstanding},\nచెల్లింపు లింక్: {upi_link}\nధన్యవాదాలు!"
-            else -> "Hi {name},\nNew Account Created,\nWeekly Instalment: ₹{weekly}, Outstanding: ₹{outstanding},\nIf you wish to pay: {upi_link} \nThank you!"
+            "Tamil" -> "அன்புள்ள {customer},\nபுதிய கடன் கணக்கு தொடங்கப்பட்டுள்ளது,\nவார தவணை: ₹{inst_amt}, மொத்த நிலுவை: ₹{balance},\nதொலைபேசி எண்: {phone}\nநன்றி!"
+            "Hindi" -> "प्रिय {customer},\nनया ऋण खाता बनाया गया है,\nसाप्ताहिक किस्त: ₹{inst_amt}, कुल बकाया: ₹{balance},\nफ़ोन नंबर: {phone}\nधन्यवाद!"
+            "Telugu" -> "ప్రియమైన {customer},\nకొత్త రుణ ఖాతా సృష్టించబడింది,\nవారపు వాయిదా: ₹{inst_amt}, బకాయి: ₹{balance},\nఫోన్ నంబర్: {phone}\nధన్యవాదాలు!"
+            else -> "Hi {customer},\nNew Account Created,\nWeekly Instalment: ₹{inst_amt}, Outstanding: ₹{balance},\nPhone Number: {phone}\nThank you!"
         }
     }
 
     fun getDefaultPaymentTemplate(lang: String): String {
         return when (lang) {
-            "Tamil" -> "அன்புள்ள {name},\nவாரம் {week}-க்கான தவணைத் தொகை ₹{p_amount} பெறப்பட்டது,\nமீதமுள்ள நிலுவை: ₹{outstanding},\nநன்றி!"
-            "Hindi" -> "प्रिय {name},\nसप्ताह {week} के लिए ₹{p_amount} की किस्त प्राप्त हुई,\nशेष बकाया: ₹{outstanding},\nधन्यवाद!"
-            "Telugu" -> "ప్రియమైన {name},\nవారం {week} కొరకు ₹{p_amount} వాయిదా స్వీకరించబడింది,\nమిగిలిన బకాయి: ₹{outstanding},\nధన్యవాదాలు!"
-            else -> "Hi {name},\nReceived ₹{p_amount} for Week {week},\nRemaining Balance: ₹{outstanding},\nThank you!"
+            "Tamil" -> "அன்புள்ள {customer},\nதவணைத் தொகை ₹{amount} பெறப்பட்டது,\nமீதமுள்ள நிலுவை: ₹{balance},\nதொலைபேசி எண்: {phone}\nநன்றி!"
+            "Hindi" -> "प्रिय {customer},\n₹{amount} की किस्त प्राप्त हुई,\nशेष बकाया: ₹{balance},\nफ़ोन नंबर: {phone}\nधन्यवाद!"
+            "Telugu" -> "ప్రియమైన {customer},\n₹{amount} వాయిదా స్వీకరించబడింది,\nమిగిలిన బకాయి: ₹{balance},\nఫోన్ నంబర్: {phone}\nధన్యవాదాలు!"
+            else -> "Hi {customer},\nReceived ₹{amount},\nRemaining Balance: ₹{balance},\nPhone Number: {phone}\nThank you!"
         }
     }
 
     fun getDefaultReminderTemplate(lang: String): String {
         return when (lang) {
-            "Tamil" -> "அன்புள்ள {name},\nஉங்கள் கடன் கணக்கிற்கான வாரத் தவணை ₹{weekly} செலுத்த வேண்டியுள்ளது,\nமீதித் தொகை: ₹{outstanding},\nதயவுசெய்து UPI மூலம் செலுத்தவும்: {upi_link}\nநன்றி!"
-            "Hindi" -> "प्रिय {name},\nआपके ऋण खाते के लिए ₹{weekly} की साप्ताहिक किस्त लंबित है,\nशेष राशि: ₹{outstanding},\nकृपया UPI के माध्यम से भुगतान करें: {upi_link}\nधन्यवाद!"
-            "Telugu" -> "ప్రియమైన {name},\nమీ రుణ ఖాతాకు సంబంధించిన వారపు వాయిదా ₹{weekly} బకాయి ఉంది,\nమిగిలిన మొత్తం: ₹{outstanding},\nదయచేసి UPI ద్వారా చెల్లించండి: {upi_link}\nధన్యవాదాలు!"
-            else -> "Hi {name}, \nWeekly instalment of ₹{weekly} is pending for your weekly account,\nBalance: ₹{outstanding},\nPlease pay using UPI : {upi_link} \nThank you!"
+            "Tamil" -> "அன்புள்ள {customer},\nஉங்கள் கடன் கணக்கிற்கான வாரத் தவணை ₹{inst_amt} செலுத்த வேண்டியுள்ளது,\nமீதித் தொகை: ₹{balance},\nதொலைபேசி எண்: {phone}\nநன்றி!"
+            "Hindi" -> "प्रिय {customer},\nआपके ऋण खाते के लिए ₹{inst_amt} की साप्ताहिक किस्त लंबित है,\nशेष राशि: ₹{balance},\nफ़ोन नंबर: {phone}\nधन्यवाद!"
+            "Telugu" -> "ప్రియమైన {customer},\nమీ రుణ ఖాతాకు సంబంధించిన వారపు వాయిదా ₹{inst_amt} బకాయి ఉంది,\nమిగిలిన మొత్తం: ₹{balance},\nఫోన్ నంబర్: {phone}\nధన్యవాదాలు!"
+            else -> "Hi {customer},\nWeekly instalment of ₹{inst_amt} is pending for your weekly account,\nBalance: ₹{balance},\nPhone Number: {phone}\nThank you!"
         }
     }
 
     fun getDefaultWhatsappTemplate(lang: String): String {
         return when (lang) {
-            "Tamil" -> "அன்புள்ள {name},\nவாராந்திர நினைவூட்டல்,\nஉங்கள் வார தவணைத் தொகை ₹{weekly} செலுத்த வேண்டிய நாள் இன்று,\nநிலுவைத் தொகை: *₹{outstanding}*,\nதயவுசெய்து UPI மூலம் செலுத்தவும்: {upi_link}\nநன்றி!"
-            "Hindi" -> "प्रिय {name},\nसाप्ताहिक अनुस्मारक (Reminder),\nआपकी साप्ताहिक किस्त ₹{weekly} देय है,\nकुल बकाया राशि: *₹{outstanding}*,\nकृपया UPI के माध्यम से भुगतान करें: {upi_link}\nधन्यवाद!"
-            "Telugu" -> "ప్రియమైన {name},\nవారపు రిమైండర్,\nమీ వారపు వాయిదా ₹{weekly} చెల్లించవలసి ఉంది,\nమొత్తం బకాయి: *₹{outstanding}*,\nదయచేసి UPI ద్వారా చెల్లించండి: {upi_link}\nధన్యవాదాలు!"
-            else -> "Hi {name},\nWeekly Reminder,\nYour weekly collection of ₹{weekly} is due,\nOutstanding Balance: *₹{outstanding}*,\nPlease pay using UPI: {upi_link}\nThank you!"
+            "Tamil" -> "அன்புள்ள {customer},\nவாராந்திர நினைவூட்டல்,\nஉங்கள் வார தவணைத் தொகை ₹{inst_amt} செலுத்த வேண்டிய நாள் இன்று,\nநிலுவைத் தொகை: *₹{balance}*,\nதொலைபேசி எண்: {phone}\nநன்றி!"
+            "Hindi" -> "प्रिय {customer},\nसाप्ताहिक अनुस्मारक (Reminder),\nआपकी साप्ताहिक किस्त ₹{inst_amt} देय है,\nकुल बकाया राशि: *₹{balance}*,\nफ़ोन नंबर: {phone}\nधन्यवाद!"
+            "Telugu" -> "ప్రియమైన {customer},\nవారపు రిమైండర్,\nమీ వారపు వాయిదా ₹{inst_amt} చెల్లించవలసి ఉంది,\nమొత్తం బకాయి: *₹{balance}*,\nఫోన్ నంబర్: {phone}\nధన్యవాదాలు!"
+            else -> "Hi {customer},\nWeekly Reminder,\nYour weekly collection of ₹{inst_amt} is due,\nOutstanding Balance: *₹{balance}*,\nPhone Number: {phone}\nThank you!"
+        }
+    }
+
+    private fun sanitizeLegacyTemplateTokens(raw: String): String {
+        return raw
+            .replace("If you wish to pay: {upi_link}", "Phone Number: {phone}")
+            .replace("Please pay using UPI : {upi_link}", "Phone Number: {phone}")
+            .replace("Please pay using UPI: {upi_link}", "Phone Number: {phone}")
+            .replace("செலுத்த வேண்டிய முகவரி: {upi_link}", "தொலைபேசி எண்: {phone}")
+            .replace("தயவுசெய்து UPI மூலம் செலுத்தவும்: {upi_link}", "தொலைபேசி எண்: {phone}")
+            .replace("भुगतान लिंक: {upi_link}", "फ़ोन नंबर: {phone}")
+            .replace("कृपया UPI के माध्यम से भुगतान करें: {upi_link}", "फ़ोन नंबर: {phone}")
+            .replace("చెల్లింపు లింక్: {upi_link}", "ఫోన్ నంబర్: {phone}")
+            .replace("దయచేసి UPI ద్వారా చెల్లించండి: {upi_link}", "ఫోన్ నంబర్: {phone}")
+            .replace("{upi_link}", "{phone}")
+            .replace("{phone_number}", "{phone}")
+    }
+
+    /**
+     * Converts an English SMS/WhatsApp format line-by-line into Tamil, Hindi, or Telugu
+     * while preserving exact line breaks (`\n`) and all `{...}` bubble tags in their exact positions.
+     */
+    fun translateEnglishSmsFormatToLanguage(englishTemplate: String, targetLang: String): String {
+        if (targetLang == "English") return sanitizeLegacyTemplateTokens(englishTemplate)
+        val phraseMap: List<Pair<Regex, String>> = when (targetLang) {
+            "Tamil" -> listOf(
+                Regex("(?i)\\bWeekly instalment of\\b") to "வாரத் தவணை",
+                Regex("(?i)\\bis pending for your weekly account\\b") to "உங்கள் கடன் கணக்கிற்கு செலுத்த வேண்டியுள்ளது",
+                Regex("(?i)\\bYour weekly collection of\\b") to "உங்கள் வார தவணைத் தொகை",
+                Regex("(?i)\\bis due\\b") to "செலுத்த வேண்டிய நாள் இன்று",
+                Regex("(?i)\\bNew Account Created\\b") to "புதிய கடன் கணக்கு தொடங்கப்பட்டுள்ளது",
+                Regex("(?i)\\bNew Loan Created\\b") to "புதிய கடன் கணக்கு தொடங்கப்பட்டுள்ளது",
+                Regex("(?i)\\bWeekly Reminder\\b") to "வாராந்திர நினைவூட்டல்",
+                Regex("(?i)\\bWeekly Instalment\\b") to "வார தவணை",
+                Regex("(?i)\\bInstalment Amt\\b") to "தவணைத் தொகை",
+                Regex("(?i)\\bInstalment\\b") to "தவணை",
+                Regex("(?i)\\bOutstanding Balance\\b") to "நிலுவைத் தொகை",
+                Regex("(?i)\\bRemaining Balance\\b") to "மீதமுள்ள நிலுவை",
+                Regex("(?i)\\bOutstanding\\b") to "மொத்த நிலுவை",
+                Regex("(?i)\\bBalance\\b") to "மீதித் தொகை",
+                Regex("(?i)\\bReceived\\b") to "பெறப்பட்டது",
+                Regex("(?i)\\bfor Week\\b") to "வாரம்",
+                Regex("(?i)\\bPhone Number\\b") to "தொலைபேசி எண்",
+                Regex("(?i)\\bPhone\\b") to "தொலைபேசி",
+                Regex("(?i)\\bIf you wish to pay\\b") to "செலுத்த",
+                Regex("(?i)\\bPlease pay using UPI\\b") to "UPI மூலம் செலுத்தவும்",
+                Regex("(?i)\\bBusiness Name\\b") to "நிறுவனம்",
+                Regex("(?i)\\bDate\\b") to "தேதி",
+                Regex("(?i)\\bThank you\\b") to "நன்றி",
+                Regex("(?i)\\bThanks\\b") to "நன்றி",
+                Regex("(?i)\\bHi\\b") to "அன்புள்ள",
+                Regex("(?i)\\bDear\\b") to "அன்புள்ள",
+                Regex("(?i)\\bHello\\b") to "வணக்கம்"
+            )
+            "Hindi" -> listOf(
+                Regex("(?i)\\bWeekly instalment of\\b") to "साप्ताहिक किस्त",
+                Regex("(?i)\\bis pending for your weekly account\\b") to "आपके ऋण खाते के लिए लंबित है",
+                Regex("(?i)\\bYour weekly collection of\\b") to "आपकी साप्ताहिक किस्त",
+                Regex("(?i)\\bis due\\b") to "देय है",
+                Regex("(?i)\\bNew Account Created\\b") to "नया ऋण खाता बनाया गया है",
+                Regex("(?i)\\bNew Loan Created\\b") to "नया ऋण खाता बनाया गया है",
+                Regex("(?i)\\bWeekly Reminder\\b") to "साप्ताहिक अनुस्मारक (Reminder)",
+                Regex("(?i)\\bWeekly Instalment\\b") to "साप्ताहिक किस्त",
+                Regex("(?i)\\bInstalment Amt\\b") to "किस्त राशि",
+                Regex("(?i)\\bInstalment\\b") to "किस्त",
+                Regex("(?i)\\bOutstanding Balance\\b") to "कुल बकाया राशि",
+                Regex("(?i)\\bRemaining Balance\\b") to "शेष बकाया",
+                Regex("(?i)\\bOutstanding\\b") to "कुल बकाया",
+                Regex("(?i)\\bBalance\\b") to "शेष राशि",
+                Regex("(?i)\\bReceived\\b") to "प्राप्त हुई",
+                Regex("(?i)\\bfor Week\\b") to "सप्ताह के लिए",
+                Regex("(?i)\\bPhone Number\\b") to "फ़ोन नंबर",
+                Regex("(?i)\\bPhone\\b") to "फ़ोन",
+                Regex("(?i)\\bIf you wish to pay\\b") to "भुगतान हेतु",
+                Regex("(?i)\\bPlease pay using UPI\\b") to "कृपया UPI से भुगतान करें",
+                Regex("(?i)\\bBusiness Name\\b") to "व्यवसाय का नाम",
+                Regex("(?i)\\bDate\\b") to "तारीख",
+                Regex("(?i)\\bThank you\\b") to "धन्यवाद",
+                Regex("(?i)\\bThanks\\b") to "धन्यवाद",
+                Regex("(?i)\\bHi\\b") to "प्रिय",
+                Regex("(?i)\\bDear\\b") to "प्रिय",
+                Regex("(?i)\\bHello\\b") to "नमस्ते"
+            )
+            "Telugu" -> listOf(
+                Regex("(?i)\\bWeekly instalment of\\b") to "వారపు వాయిదా",
+                Regex("(?i)\\bis pending for your weekly account\\b") to "మీ రుణ ఖాతాకు బకాయి ఉంది",
+                Regex("(?i)\\bYour weekly collection of\\b") to "మీ వారపు వాయిదా",
+                Regex("(?i)\\bis due\\b") to "చెల్లించవలసి ఉంది",
+                Regex("(?i)\\bNew Account Created\\b") to "కొత్త రుణ ఖాతా సృష్టించబడింది",
+                Regex("(?i)\\bNew Loan Created\\b") to "కొత్త రుణ ఖాతా సృష్టించబడింది",
+                Regex("(?i)\\bWeekly Reminder\\b") to "వారపు రిమైండర్",
+                Regex("(?i)\\bWeekly Instalment\\b") to "వారపు వాయిదా",
+                Regex("(?i)\\bInstalment Amt\\b") to "వాయిదా మొత్తం",
+                Regex("(?i)\\bInstalment\\b") to "వాయిదా",
+                Regex("(?i)\\bOutstanding Balance\\b") to "మొత్తం బకాయి",
+                Regex("(?i)\\bRemaining Balance\\b") to "మిగిలిన బకాయి",
+                Regex("(?i)\\bOutstanding\\b") to "బకాయి",
+                Regex("(?i)\\bBalance\\b") to "మిగిలిన మొత్తం",
+                Regex("(?i)\\bReceived\\b") to "స్వీకరించబడింది",
+                Regex("(?i)\\bfor Week\\b") to "వారం కొరకు",
+                Regex("(?i)\\bPhone Number\\b") to "ఫోన్ నంబర్",
+                Regex("(?i)\\bPhone\\b") to "ఫోన్",
+                Regex("(?i)\\bIf you wish to pay\\b") to "చెల్లింపు కొరకు",
+                Regex("(?i)\\bPlease pay using UPI\\b") to "దయచేసి UPI ద్వారా చెల్లించండి",
+                Regex("(?i)\\bBusiness Name\\b") to "వ్యాపార పేరు",
+                Regex("(?i)\\bDate\\b") to "తేదీ",
+                Regex("(?i)\\bThank you\\b") to "ధన్యవాదాలు",
+                Regex("(?i)\\bThanks\\b") to "ధన్యవాదాలు",
+                Regex("(?i)\\bHi\\b") to "ప్రియమైన",
+                Regex("(?i)\\bDear\\b") to "ప్రియమైన",
+                Regex("(?i)\\bHello\\b") to "నమస్కారం"
+            )
+            else -> emptyList()
+        }
+
+        val cleaned = sanitizeLegacyTemplateTokens(englishTemplate)
+        return cleaned.split("\n").joinToString("\n") { line ->
+            var translatedLine = line
+            for ((regex, replacement) in phraseMap) {
+                translatedLine = regex.replace(translatedLine, replacement)
+            }
+            translatedLine
         }
     }
 
     fun getSmsNewLoanTemplate(lang: String): String {
         val legacyKey = if (lang == "English") "sms_new_loan_template" else ""
-        return if (legacyKey.isNotEmpty() && prefs.contains(legacyKey)) {
+        val raw = if (legacyKey.isNotEmpty() && prefs.contains(legacyKey)) {
             prefs.getString(legacyKey, getDefaultNewLoanTemplate(lang)) ?: getDefaultNewLoanTemplate(lang)
         } else {
             prefs.getString("sms_new_loan_template_$lang", getDefaultNewLoanTemplate(lang)) ?: getDefaultNewLoanTemplate(lang)
         }
+        return sanitizeLegacyTemplateTokens(raw)
     }
 
     fun getSmsPaymentTemplate(lang: String): String {
@@ -1198,27 +1404,30 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         } else {
             prefs.getString("sms_payment_template_$lang", getDefaultPaymentTemplate(lang)) ?: getDefaultPaymentTemplate(lang)
         }
-        return if (v == getDefaultPaymentTemplate(lang) && lang == "English" && prefs.contains("sms_payment_entry_template")) {
+        val raw = if (v == getDefaultPaymentTemplate(lang) && lang == "English" && prefs.contains("sms_payment_entry_template")) {
             prefs.getString("sms_payment_entry_template", v) ?: v
         } else v
+        return sanitizeLegacyTemplateTokens(raw)
     }
 
     fun getSmsReminderTemplate(lang: String): String {
         val legacyKey = if (lang == "English") "sms_reminder_template" else ""
-        return if (legacyKey.isNotEmpty() && prefs.contains(legacyKey)) {
+        val raw = if (legacyKey.isNotEmpty() && prefs.contains(legacyKey)) {
             prefs.getString(legacyKey, getDefaultReminderTemplate(lang)) ?: getDefaultReminderTemplate(lang)
         } else {
             prefs.getString("sms_reminder_template_$lang", getDefaultReminderTemplate(lang)) ?: getDefaultReminderTemplate(lang)
         }
+        return sanitizeLegacyTemplateTokens(raw)
     }
 
     fun getWhatsappReminderTemplate(lang: String): String {
         val legacyKey = if (lang == "English") "whatsapp_reminder_template" else ""
-        return if (legacyKey.isNotEmpty() && prefs.contains(legacyKey)) {
+        val raw = if (legacyKey.isNotEmpty() && prefs.contains(legacyKey)) {
             prefs.getString(legacyKey, getDefaultWhatsappTemplate(lang)) ?: getDefaultWhatsappTemplate(lang)
         } else {
             prefs.getString("whatsapp_reminder_template_$lang", getDefaultWhatsappTemplate(lang)) ?: getDefaultWhatsappTemplate(lang)
         }
+        return sanitizeLegacyTemplateTokens(raw)
     }
 
     private val _currentTemplateLanguage = MutableStateFlow("English")
@@ -1573,7 +1782,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 _isSyncing.value = true
-                _firebaseSyncStatus.value = "Checking RTDB Device Gate & Firestore Audit Log..."
+                _firebaseSyncStatus.value = "Checking Cloud Firestore (default) & Audit Log..."
                 com.example.network.CloudLedgerSyncEngine.initializeDevicePresenceAndTriggers(
                     context = getApplication(),
                     db = db,
@@ -1607,16 +1816,13 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     context = getApplication(),
                     db = db
                 )
-                val count = db.collectionDao().getAllCustomersOnce().size
-                val peers = com.example.network.CloudLedgerSyncEngine.onlinePeerCount.value
-                val pending = com.example.network.CloudLedgerSyncEngine.pendingOfflineCount.value
-                _firebaseSyncStatus.value = if (pending > 0) {
-                    "Offline Queue ($pending pending • $count borrowers)"
-                } else if (peers > 0) {
-                    "Synced ($count borrowers • $peers peer online)"
-                } else {
-                    "Synced ($count borrowers)"
-                }
+                val summary = com.example.network.CloudLedgerSyncEngine.reconcileWithCloud(
+                    context = getApplication(),
+                    db = db,
+                    forceFullMigrationCheck = true,
+                    onProgress = { msg -> _firebaseSyncStatus.value = msg }
+                )
+                _firebaseSyncStatus.value = summary
             } catch (e: Exception) {
                 val realError = if (e is java.util.concurrent.ExecutionException) e.cause ?: e else e
                 _firebaseSyncStatus.value = "Cloud Sync Queued: ${realError.message}"
@@ -2185,8 +2391,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         collectionDay = payloadObj.optString("collectionDay", "Monday"),
                         createdAt = payloadObj.optLong("createdAt", System.currentTimeMillis()),
                         city = payloadObj.optString("city", ""),
-                        smsWeeklyReminder = payloadObj.optBoolean("smsWeeklyReminder", true),
-                        smsConfirmationOfEntry = payloadObj.optBoolean("smsConfirmationOfEntry", true),
+                        smsWeeklyReminder = payloadObj.optBoolean("smsWeeklyReminder", false),
+                        smsConfirmationOfEntry = payloadObj.optBoolean("smsConfirmationOfEntry", false),
                         autoWeeklySms = payloadObj.optBoolean("autoWeeklySms", false),
                         autoWeeklyWhatsapp = payloadObj.optBoolean("autoWeeklyWhatsapp", false),
                         upiNameAlias = payloadObj.optString("upiNameAlias", ""),
@@ -2653,6 +2859,54 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         markDirty()
     }
 
+    fun setStatementHeaderTitle(value: String) {
+        val old = _statementHeaderTitle.value
+        _statementHeaderTitle.value = value
+        prefs.edit().putString("statement_header_title", value).apply()
+        markDirty()
+        logPreferenceChange("statement_header_title", old, value)
+    }
+
+    fun setStatementHeaderSubtitle(value: String) {
+        val old = _statementHeaderSubtitle.value
+        _statementHeaderSubtitle.value = value
+        prefs.edit().putString("statement_header_subtitle", value).apply()
+        markDirty()
+        logPreferenceChange("statement_header_subtitle", old, value)
+    }
+
+    fun setStatementCustomerBoxTemplate(value: String) {
+        val old = _statementCustomerBoxTemplate.value
+        _statementCustomerBoxTemplate.value = value
+        prefs.edit().putString("statement_customer_box", value).apply()
+        markDirty()
+        logPreferenceChange("statement_customer_box", old, value)
+    }
+
+    fun setStatementLoanBoxTemplate(value: String) {
+        val old = _statementLoanBoxTemplate.value
+        _statementLoanBoxTemplate.value = value
+        prefs.edit().putString("statement_loan_box", value).apply()
+        markDirty()
+        logPreferenceChange("statement_loan_box", old, value)
+    }
+
+    fun setStatementFooterTemplate(value: String) {
+        val old = _statementFooterTemplate.value
+        _statementFooterTemplate.value = value
+        prefs.edit().putString("statement_footer_text", value).apply()
+        markDirty()
+        logPreferenceChange("statement_footer_text", old, value)
+    }
+
+    fun resetStatementTemplatesToDefault() {
+        setStatementHeaderTitle(defaultStatementHeaderTitle)
+        setStatementHeaderSubtitle(defaultStatementHeaderSubtitle)
+        setStatementCustomerBoxTemplate(defaultStatementCustomerBox)
+        setStatementLoanBoxTemplate(defaultStatementLoanBox)
+        setStatementFooterTemplate(defaultStatementFooter)
+    }
+
     fun setQrImageUri(uriStr: String) {
         _qrImageUri.value = uriStr
         prefs.edit().putString("qr_image_uri", uriStr).apply()
@@ -2684,23 +2938,33 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setSmsNewLoanTemplate(template: String, lang: String = _currentTemplateLanguage.value) {
-        prefs.edit().putString("sms_new_loan_template_$lang", template).apply()
+        val sanitized = sanitizeLegacyTemplateTokens(template)
+        val edit = prefs.edit().putString("sms_new_loan_template_$lang", sanitized)
         if (lang == "English") {
-            prefs.edit().putString("sms_new_loan_template", template).apply()
+            edit.putString("sms_new_loan_template", sanitized)
+            listOf("Tamil", "Hindi", "Telugu").forEach { otherLang ->
+                edit.putString("sms_new_loan_template_$otherLang", translateEnglishSmsFormatToLanguage(sanitized, otherLang))
+            }
         }
+        edit.apply()
         if (_currentTemplateLanguage.value == lang) {
-            _smsNewLoanTemplate.value = template
+            _smsNewLoanTemplate.value = sanitized
         }
         markDirty()
     }
 
     fun setSmsPaymentTemplate(template: String, lang: String = _currentTemplateLanguage.value) {
-        prefs.edit().putString("sms_payment_template_$lang", template).apply()
+        val sanitized = sanitizeLegacyTemplateTokens(template)
+        val edit = prefs.edit().putString("sms_payment_template_$lang", sanitized)
         if (lang == "English") {
-            prefs.edit().putString("sms_payment_template", template).apply()
+            edit.putString("sms_payment_template", sanitized)
+            listOf("Tamil", "Hindi", "Telugu").forEach { otherLang ->
+                edit.putString("sms_payment_template_$otherLang", translateEnglishSmsFormatToLanguage(sanitized, otherLang))
+            }
         }
+        edit.apply()
         if (_currentTemplateLanguage.value == lang) {
-            _smsPaymentTemplate.value = template
+            _smsPaymentTemplate.value = sanitized
         }
         markDirty()
     }
@@ -2711,23 +2975,33 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setSmsReminderTemplate(template: String, lang: String = _currentTemplateLanguage.value) {
-        prefs.edit().putString("sms_reminder_template_$lang", template).apply()
+        val sanitized = sanitizeLegacyTemplateTokens(template)
+        val edit = prefs.edit().putString("sms_reminder_template_$lang", sanitized)
         if (lang == "English") {
-            prefs.edit().putString("sms_reminder_template", template).apply()
+            edit.putString("sms_reminder_template", sanitized)
+            listOf("Tamil", "Hindi", "Telugu").forEach { otherLang ->
+                edit.putString("sms_reminder_template_$otherLang", translateEnglishSmsFormatToLanguage(sanitized, otherLang))
+            }
         }
+        edit.apply()
         if (_currentTemplateLanguage.value == lang) {
-            _smsReminderTemplate.value = template
+            _smsReminderTemplate.value = sanitized
         }
         markDirty()
     }
 
     fun setWhatsappReminderTemplate(template: String, lang: String = _currentTemplateLanguage.value) {
-        prefs.edit().putString("whatsapp_reminder_template_$lang", template).apply()
+        val sanitized = sanitizeLegacyTemplateTokens(template)
+        val edit = prefs.edit().putString("whatsapp_reminder_template_$lang", sanitized)
         if (lang == "English") {
-            prefs.edit().putString("whatsapp_reminder_template", template).apply()
+            edit.putString("whatsapp_reminder_template", sanitized)
+            listOf("Tamil", "Hindi", "Telugu").forEach { otherLang ->
+                edit.putString("whatsapp_reminder_template_$otherLang", translateEnglishSmsFormatToLanguage(sanitized, otherLang))
+            }
         }
+        edit.apply()
         if (_currentTemplateLanguage.value == lang) {
-            _whatsappReminderTemplate.value = template
+            _whatsappReminderTemplate.value = sanitized
         }
         markDirty()
     }
@@ -3137,8 +3411,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         setSimSelection("SIM 1")
         setLanguage("English")
         setUpiId("9440736893@ptyes")
-        setUpiLink("upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P")
-        setBusinessName("Muneeswaran P")
+        setUpiLink("upi://pay?pa=9440736893@ptyes&pn=MD%20Finance")
+        setBusinessName("MD Finance")
+        resetStatementTemplatesToDefault()
         setQrImageUri("")
         setSmsNewLoanTemplate("Hi {name},\nNew Account Created,\nWeekly Instalment: ₹{weekly}, Outstanding: ₹{outstanding},\nIf you wish to pay: {upi} \nThank you!")
         setSmsPaymentTemplate("Hi {name},\nReceived ₹{p_amount} for Week {week},\nRemaining Balance: ₹{outstanding},\nThank you!")
@@ -3294,8 +3569,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         phone2: String = "",
         collectionDay: String,
         city: String = "",
-        smsWeeklyReminder: Boolean = true,
-        smsConfirmationOfEntry: Boolean = true,
+        smsWeeklyReminder: Boolean = false,
+        smsConfirmationOfEntry: Boolean = false,
         autoWeeklySms: Boolean = false,
         autoWeeklyWhatsapp: Boolean = false,
         upiNameAlias: String = "",
@@ -3650,8 +3925,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             customOrder = maxOrder,
                             collectionDay = item.collectionDay,
                             city = item.city,
-                            smsWeeklyReminder = true,
-                            smsConfirmationOfEntry = true,
+                            smsWeeklyReminder = false,
+                            smsConfirmationOfEntry = false,
                             autoWeeklySms = false,
                             autoWeeklyWhatsapp = false
                         )
@@ -3735,8 +4010,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         phone2: String = "",
         collectionDay: String,
         city: String = "",
-        smsWeeklyReminder: Boolean = true,
-        smsConfirmationOfEntry: Boolean = true,
+        smsWeeklyReminder: Boolean = false,
+        smsConfirmationOfEntry: Boolean = false,
         autoWeeklySms: Boolean = false,
         autoWeeklyWhatsapp: Boolean = false,
         upiNameAlias: String = "",
@@ -4370,8 +4645,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                     customOrder = currentMaxOrder,
                                     collectionDay = collectionDay,
                                     city = item.city,
-                                    smsWeeklyReminder = true,
-                                    smsConfirmationOfEntry = true
+                                    smsWeeklyReminder = false,
+                                    smsConfirmationOfEntry = false
                                 )
                             )
 
@@ -4785,6 +5060,10 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
                         purgeCorruptedRecordsAndRefreshGroups()
                         triggerDatabaseRescanAndRepair()
+                        com.example.network.CloudLedgerSyncEngine.markBulkImportNeedsCloudSync(context)
+                    }
+                    if (!offlineModeEnabled.value && !_isDemoMode.value) {
+                        forceUploadToFirebaseCloud()
                     }
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         onSuccess()
@@ -4834,6 +5113,10 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
                         purgeCorruptedRecordsAndRefreshGroups()
                         triggerDatabaseRescanAndRepair()
+                        com.example.network.CloudLedgerSyncEngine.markBulkImportNeedsCloudSync(context)
+                    }
+                    if (!offlineModeEnabled.value && !_isDemoMode.value) {
+                        forceUploadToFirebaseCloud()
                     }
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         onSuccess()
@@ -5216,8 +5499,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         try {
             val backupObj = org.json.JSONObject(jsonString)
             performCleanDbRestoreAndVerify(backupObj)
+            com.example.network.CloudLedgerSyncEngine.markBulkImportNeedsCloudSync(getApplication())
         } finally {
             isRestoringFromJson = false
+        }
+        if (!offlineModeEnabled.value && !_isDemoMode.value) {
+            forceUploadToFirebaseCloud()
         }
     }
 
@@ -5330,8 +5617,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     collectionDay = normalizedDay,
                     createdAt = cObj.optLong("createdAt", System.currentTimeMillis()),
                     city = cObj.optString("city", ""),
-                    smsWeeklyReminder = cObj.optBoolean("smsWeeklyReminder", true),
-                    smsConfirmationOfEntry = cObj.optBoolean("smsConfirmationOfEntry", true),
+                    smsWeeklyReminder = cObj.optBoolean("smsWeeklyReminder", false),
+                    smsConfirmationOfEntry = cObj.optBoolean("smsConfirmationOfEntry", false),
                     autoWeeklySms = cObj.optBoolean("autoWeeklySms", false),
                     autoWeeklyWhatsapp = cObj.optBoolean("autoWeeklyWhatsapp", false),
                     upiNameAlias = cObj.optString("upiNameAlias", ""),
@@ -5808,8 +6095,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             collectionDay = normalizedDay,
                             createdAt = cObj.optLong("createdAt", System.currentTimeMillis()),
                             city = cObj.optString("city", ""),
-                            smsWeeklyReminder = cObj.optBoolean("smsWeeklyReminder", true),
-                            smsConfirmationOfEntry = cObj.optBoolean("smsConfirmationOfEntry", true),
+                            smsWeeklyReminder = cObj.optBoolean("smsWeeklyReminder", false),
+                            smsConfirmationOfEntry = cObj.optBoolean("smsConfirmationOfEntry", false),
                             autoWeeklySms = cObj.optBoolean("autoWeeklySms", false),
                             autoWeeklyWhatsapp = cObj.optBoolean("autoWeeklyWhatsapp", false),
                             uuid = if (customerUuid.isNotEmpty()) customerUuid else java.util.UUID.randomUUID().toString(),
@@ -6248,8 +6535,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         collectionDay = cObj.optString("collectionDay", "Monday"),
                         createdAt = cObj.optLong("createdAt", System.currentTimeMillis()),
                         city = cObj.optString("city", ""),
-                        smsWeeklyReminder = cObj.optBoolean("smsWeeklyReminder", true),
-                        smsConfirmationOfEntry = cObj.optBoolean("smsConfirmationOfEntry", true),
+                        smsWeeklyReminder = cObj.optBoolean("smsWeeklyReminder", false),
+                        smsConfirmationOfEntry = cObj.optBoolean("smsConfirmationOfEntry", false),
                         autoWeeklySms = cObj.optBoolean("autoWeeklySms", false),
                         autoWeeklyWhatsapp = cObj.optBoolean("autoWeeklyWhatsapp", false),
                         uuid = customerUuid,
@@ -6643,8 +6930,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             collectionDay = obj.optString("collectionDay", "Monday"),
             createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
             city = obj.optString("city", ""),
-            smsWeeklyReminder = obj.optBoolean("smsWeeklyReminder", true),
-            smsConfirmationOfEntry = obj.optBoolean("smsConfirmationOfEntry", true),
+            smsWeeklyReminder = obj.optBoolean("smsWeeklyReminder", false),
+            smsConfirmationOfEntry = obj.optBoolean("smsConfirmationOfEntry", false),
             autoWeeklySms = obj.optBoolean("autoWeeklySms", false),
             autoWeeklyWhatsapp = obj.optBoolean("autoWeeklyWhatsapp", false),
             upiNameAlias = obj.optString("upiNameAlias", ""),

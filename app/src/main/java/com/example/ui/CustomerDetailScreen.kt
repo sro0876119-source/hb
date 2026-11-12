@@ -2349,6 +2349,76 @@ fun CustomerDetailScreen(
                     }
                 }
             }
+
+            // Line 3: Audit Log button (filters audit log to this customer)
+            val allEditLogs by viewModel.allEditLogs.collectAsStateWithLifecycle()
+            val customerAuditCount = remember(allEditLogs, customer.id, customer.name) {
+                allEditLogs.count { log ->
+                    log.customerId == customer.id ||
+                        (log.customerId == 0 && log.customerName.trim().equals(customer.name.trim(), ignoreCase = true))
+                }
+            }
+            Surface(
+                onClick = { viewModel.navigateTo(Screen.CustomerAuditLog(customer.id)) },
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFFF8FAFC),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = Color(0xFFE2E8F0)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("accounts_audit_log_toggle")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FactCheck,
+                            contentDescription = null,
+                            tint = ColorSlateDark,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Audit Log",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = ColorSlateDark
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFF94A3B8)
+                        ) {
+                            Text(
+                                text = "$customerAuditCount",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Open Customer Audit Log",
+                            tint = ColorSlateDark,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -2701,63 +2771,63 @@ fun UnpaidWeekBubbleRow(
     currentUserRole: String = "ADMIN"
 ) {
     val orangeText = Color(0xFFEA580C)
-    val orangeBorder = Color(0xFFFB923C)
+    val orangeBorder = Color(0xFFFED7AA)
     val orangeBg = Color(0xFFFFF7ED)
     val dateStr = remember(unpaidDateMillis) {
         SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(unpaidDateMillis))
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-        contentAlignment = Alignment.Center
+    Card(
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = orangeBg),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, orangeBorder),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = orangeBg,
-            border = BorderStroke(1.dp, orangeBorder),
-            shadowElevation = 1.dp,
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier
+                .height(IntrinsicSize.Min)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            // Left continuous vertical red border bar matching PaymentHistoryRow style
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(6.dp)
+                    .background(ColorLossRed)
+            )
+
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .weight(1.0f)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Box(
                         modifier = Modifier
-                            .background(orangeText.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                            .background(orangeText.copy(alpha = 0.14f), RoundedCornerShape(6.dp))
+                            .border(1.dp, orangeText.copy(alpha = 0.25f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
                             text = dateStr,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = orangeText
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Paid: ₹0 — Not paid in that week",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = orangeText
                         )
-                        Text(
-                            text = "$betweenLabel • Week Nil",
-                            fontSize = 9.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = orangeText.copy(alpha = 0.8f)
-                        )
                     }
+                    Text(
+                        text = "Not Paid",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = ColorLossRed
+                    )
                 }
 
                 if (explicitPayment != null && onDeleteExplicit != null && currentUserRole != "USER") {
@@ -2768,7 +2838,7 @@ fun UnpaidWeekBubbleRow(
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Remove unpaid mark",
-                            tint = orangeText,
+                            tint = ColorLossRed,
                             modifier = Modifier.size(15.dp)
                         )
                     }

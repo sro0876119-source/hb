@@ -177,7 +177,7 @@ class NotificationListener : NotificationListenerService() {
 
                 // Trigger confirmation SMS if customer configuration has it enabled, and SMS are not globally paused
                 if (matchedCustomer.smsConfirmationOfEntry) {
-                    val smsPaused = prefs.getBoolean("sms_paused", false)
+                    val smsPaused = prefs.getBoolean("sms_paused", true)
                     val simSelection = prefs.getString("sim_selection", "SIM 1") ?: "SIM 1"
                     val upiId = prefs.getString("upi_id", "9440736893@ptyes") ?: "9440736893@ptyes"
                     val customerLang = matchedCustomer.preferredLanguage

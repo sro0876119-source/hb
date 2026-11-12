@@ -15,8 +15,8 @@ data class Customer(
     val collectionDay: String = "Monday", // Collection Day/Group (e.g., Monday, Tuesday, etc.)
     val createdAt: Long = System.currentTimeMillis(),
     val city: String = "",
-    val smsWeeklyReminder: Boolean = true,
-    val smsConfirmationOfEntry: Boolean = true,
+    val smsWeeklyReminder: Boolean = false,
+    val smsConfirmationOfEntry: Boolean = false,
     val autoWeeklySms: Boolean = false,
     val autoWeeklyWhatsapp: Boolean = false,
     val upiNameAlias: String = "",

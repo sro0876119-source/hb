@@ -1,241 +1,387 @@
 package com.example.util
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Typeface
-import android.graphics.Paint.Align
-import android.text.TextPaint
-import android.text.TextUtils
+import android.content.Intent
+import android.graphics.*
+import androidx.core.content.FileProvider
 import com.example.data.LoanCycle
 import com.example.data.WeeklyPayment
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
 object StatementGenerator {
-    suspend fun generateCustomerStatementBitmap(
+
+    fun resolveStatementTemplate(
+        rawTemplate: String,
+        businessName: String,
+        customerName: String,
+        customerPhone: String,
+        collectionDay: String,
+        customerCity: String = "",
+        routeNo: Int = 1,
+        loan: LoanCycle? = null,
+        payments: List<WeeklyPayment> = emptyList(),
+        upiId: String = ""
+    ): String {
+        val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+        val todayStr = dateFormat.format(Date())
+        val effectiveBiz = if (businessName.isBlank() || businessName.trim().equals("Muneeswaran P", ignoreCase = true)) {
+            "MD Finance"
+        } else {
+            businessName.trim()
+        }
+        val principal = loan?.loanAmount ?: 10000.0
+        val interest = loan?.interestAmount ?: 2000.0
+        val totalDue = principal + interest
+        val weeklyInst = loan?.weeklyAmount ?: 1000.0
+        val paidAmt = if (loan != null) {
+            if (payments.isNotEmpty()) payments.sumOf { it.amountPaid } else loan.paidAmount
+        } else {
+            4000.0
+        }
+        val balance = (totalDue - paidAmt).coerceAtLeast(0.0)
+        val startDateStr = if (loan != null && loan.startDate > 0L) dateFormat.format(Date(loan.startDate)) else todayStr
+        val totalWeeks = loan?.totalWeeks ?: 12
+
+        return rawTemplate
+            .replace("{business}", effectiveBiz)
+            .replace("{customer}", customerName.ifBlank { "Customer" })
+            .replace("{name}", customerName.ifBlank { "Customer" })
+            .replace("{phone}", customerPhone.ifBlank { "N/A" })
+            .replace("{phone_number}", customerPhone.ifBlank { "N/A" })
+            .replace("{upi_link}", customerPhone.ifBlank { "N/A" })
+            .replace("{day}", collectionDay.ifBlank { "Monday" })
+            .replace("{city}", customerCity.ifBlank { "Local" })
+            .replace("{route}", routeNo.toString())
+            .replace("{loan_amt}", CurrencyFormatter.format(principal))
+            .replace("{interest}", CurrencyFormatter.format(interest))
+            .replace("{total_due}", CurrencyFormatter.format(totalDue))
+            .replace("{inst_amt}", CurrencyFormatter.format(weeklyInst))
+            .replace("{weekly}", CurrencyFormatter.format(weeklyInst))
+            .replace("{paid_amt}", CurrencyFormatter.format(paidAmt))
+            .replace("{amount}", CurrencyFormatter.format(paidAmt))
+            .replace("{p_amount}", CurrencyFormatter.format(paidAmt))
+            .replace("{balance}", CurrencyFormatter.format(balance))
+            .replace("{outstanding}", CurrencyFormatter.format(balance))
+            .replace("{weeks}", totalWeeks.toString())
+            .replace("{start_date}", startDateStr)
+            .replace("{date}", todayStr)
+            .replace("{upi}", upiId.ifBlank { "9440736893@ptyes" })
+    }
+
+    fun generateCustomerStatementBitmap(
         context: Context,
         businessName: String,
         customerName: String,
+        customerPhone: String = "",
         collectionDay: String,
-        activeLoan: LoanCycle,
+        activeLoan: LoanCycle? = null,
+        loan: LoanCycle = activeLoan ?: LoanCycle(customerId = 0, loanAmount = 0.0, interestAmount = 0.0, weeklyAmount = 0.0, totalWeeks = 0, startDate = 0L),
         payments: List<WeeklyPayment>,
-        themeName: String,
-        customizationCode: String,
-        customerPhone: String,
-        isClosedLoan: Boolean = false
-    ): Bitmap = withContext(Dispatchers.Default) {
-        val sortedPayments = payments
-            .filter { it.amountPaid > 0.0 }
-            .sortedWith(compareBy<WeeklyPayment> { it.paymentDate }.thenBy { it.weekNumber })
-        val width = 800
-        val dynamicRowHeight = if (sortedPayments.isEmpty()) 100f else (sortedPayments.size * 45f)
-        val height = maxOf(800, (540f + dynamicRowHeight + 150f).toInt())
-        
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        
-        // Draw Background
-        val bgPaint = Paint().apply {
-            color = 0xFFF8FAFC.toInt() // Slate 50
-            style = Paint.Style.FILL
-        }
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
-        
-        // Header Paint
-        val headerPaint = Paint().apply {
-            color = 0xFF0F172A.toInt() // Dark Slate 900
-            style = Paint.Style.FILL
-        }
-        canvas.drawRect(0f, 0f, width.toFloat(), 180f, headerPaint)
-        
-        // Title
-        val titlePaint = Paint().apply {
-            color = 0xFFFFFFFF.toInt()
-            textSize = 36f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            isAntiAlias = true
-        }
-        val displayedBusinessName = truncateText(businessName.ifEmpty { "MD FINANCE" }, titlePaint, 450f)
-        canvas.drawText(displayedBusinessName, 40f, 75f, titlePaint)
-        
-        val subtitlePaint = Paint().apply {
-            color = 0xFF94A3B8.toInt()
-            textSize = 20f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-            isAntiAlias = true
-        }
-        val statementSubtitle = if (isClosedLoan) "Official Customer Loan Statement (Closed Account)" else "Official Customer Loan Statement"
-        canvas.drawText(statementSubtitle, 40f, 115f, subtitlePaint)
-        
-        // Date
-        val datePaint = Paint().apply {
-            color = 0xFF94A3B8.toInt()
-            textSize = 18f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-            isAntiAlias = true
-            textAlign = Align.RIGHT
-        }
-        val df = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
-        canvas.drawText(df.format(Date()), width.toFloat() - 40f, 75f, datePaint)
-        
-        // Customer Info Card (Left Box)
-        val cardPaint = Paint().apply {
-            color = 0xFFFFFFFF.toInt()
-            style = Paint.Style.FILL
-        }
-        val borderPaint = Paint().apply {
-            color = 0xFFE2E8F0.toInt()
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-        }
-        val cardBottom = if (isClosedLoan) 420f else 410f
-        canvas.drawRoundRect(40f, 210f, 385f, cardBottom, 16f, 16f, cardPaint)
-        canvas.drawRoundRect(40f, 210f, 385f, cardBottom, 16f, 16f, borderPaint)
-        
-        val textPaint = Paint().apply {
-            color = 0xFF1E293B.toInt()
-            textSize = 22f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            isAntiAlias = true
-        }
-        
-        val labelPaint = Paint().apply {
-            color = 0xFF64748B.toInt()
-            textSize = 18f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-            isAntiAlias = true
-        }
-        
-        // Changed "Client Profile" to "Customer Details"
-        canvas.drawText("Customer Details", 60f, 245f, textPaint)
-        
-        val displayedCustomerName = truncateText("Name: $customerName", labelPaint, 300f)
-        val displayedCustomerPhone = truncateText("Phone: $customerPhone", labelPaint, 300f)
-        val displayedCollectionDay = truncateText("Collection Day: $collectionDay", labelPaint, 300f)
-        
-        canvas.drawText(displayedCustomerName, 60f, 285f, labelPaint)
-        canvas.drawText(displayedCustomerPhone, 60f, 315f, labelPaint)
-        canvas.drawText(displayedCollectionDay, 60f, 345f, labelPaint)
-        
-        // Loan details card (Right Box)
-        val cardRight = width.toFloat() - 40f
-        canvas.drawRoundRect(415f, 210f, cardRight, cardBottom, 16f, 16f, cardPaint)
-        canvas.drawRoundRect(415f, 210f, cardRight, cardBottom, 16f, 16f, borderPaint)
-        
-        canvas.drawText("Loan Summary", 435f, 245f, textPaint)
-        
-        val amtPaid = payments.sumOf { it.amountPaid }.toLong()
-        val totalContractVal = (activeLoan.loanAmount + activeLoan.interestAmount).toLong()
-        val outstandingVal = if (isClosedLoan) 0L else maxOf(0L, totalContractVal - amtPaid)
-        val dispersalDateStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(activeLoan.startDate))
-        
-        if (isClosedLoan) {
-            canvas.drawText("Date of Dispersal: $dispersalDateStr", 435f, 275f, labelPaint)
-            canvas.drawText("Total Contract Value: ₹$totalContractVal", 435f, 305f, labelPaint)
-            canvas.drawText("Amt Paid: ₹$amtPaid", 435f, 335f, labelPaint)
-            canvas.drawText("Outstanding: ₹$outstandingVal", 435f, 365f, labelPaint)
-            val statusLabelPaint = Paint().apply {
-                color = 0xFFDC2626.toInt()
-                textSize = 18f
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                isAntiAlias = true
+        themeName: String = "",
+        customizationCode: String = "",
+        isClosedLoan: Boolean = false,
+        customerCity: String = "",
+        routeNo: Int = 1
+    ): Bitmap {
+        val prefs = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE)
+        val upiId = prefs.getString("upi_id", "9440736893@ptyes") ?: "9440736893@ptyes"
+
+        val customProps = mutableMapOf<String, String>()
+        customizationCode.lines().forEach { line ->
+            val parts = line.split("=", limit = 2)
+            if (parts.size == 2) {
+                customProps[parts[0].trim().uppercase()] = parts[1].trim()
             }
-            canvas.drawText("Status: CLOSED", 435f, 395f, statusLabelPaint)
-        } else {
-            canvas.drawText("Date of Dispersal: $dispersalDateStr", 435f, 280f, labelPaint)
-            canvas.drawText("Total Contract Value: ₹$totalContractVal", 435f, 310f, labelPaint)
-            canvas.drawText("Amt Paid: ₹$amtPaid", 435f, 340f, labelPaint)
-            canvas.drawText("Outstanding: ₹$outstandingVal", 435f, 370f, labelPaint)
         }
-        
-        // Payments Table Title (Simplified to "Transaction History")
-        val tableTitleY = if (isClosedLoan) 450f else 440f
-        canvas.drawText("Transaction History", 40f, tableTitleY, textPaint)
-        
-        // Table Header
-        val thPaint = Paint().apply {
-            color = 0xFFF1F5F9.toInt()
-            style = Paint.Style.FILL
+
+        val rawHeaderTitle = prefs.getString("statement_header_title", "{business}") ?: "{business}"
+        val rawHeaderSubtitle = prefs.getString("statement_header_subtitle", customProps["TITLE"] ?: "COLLECTION STATEMENT REPORT")
+            ?: "COLLECTION STATEMENT REPORT"
+        val rawCustomerBox = prefs.getString("statement_customer_box", "Name: {customer}\nPhone: {phone}\nCollection Day: {day}")
+            ?: "Name: {customer}\nPhone: {phone}\nCollection Day: {day}"
+        val rawLoanBox = prefs.getString(
+            "statement_loan_box",
+            "Date of Dispersal: {start_date}\nTotal Contract Value: ₹{total_due}\nAmt Paid: ₹{paid_amt}\nOutstanding: ₹{balance}"
+        ) ?: "Date of Dispersal: {start_date}\nTotal Contract Value: ₹{total_due}\nAmt Paid: ₹{paid_amt}\nOutstanding: ₹{balance}"
+        val rawFooter = prefs.getString("statement_footer_text", "THANK YOU\n${customProps["FOOTER"] ?: "Please retain this statement for your verification."}")
+            ?: "THANK YOU\nPlease retain this statement for your verification."
+
+        val resolvedHeaderTitle = resolveStatementTemplate(
+            rawHeaderTitle, businessName, customerName, customerPhone, collectionDay, customerCity, routeNo, loan, payments, upiId
+        ).ifBlank { "MD Finance" }
+        val resolvedHeaderSubtitle = resolveStatementTemplate(
+            rawHeaderSubtitle, businessName, customerName, customerPhone, collectionDay, customerCity, routeNo, loan, payments, upiId
+        )
+        val customerBoxLines = resolveStatementTemplate(
+            rawCustomerBox, businessName, customerName, customerPhone, collectionDay, customerCity, routeNo, loan, payments, upiId
+        ).lines().filter { it.isNotBlank() }
+        val loanBoxLines = resolveStatementTemplate(
+            rawLoanBox, businessName, customerName, customerPhone, collectionDay, customerCity, routeNo, loan, payments, upiId
+        ).lines().filter { it.isNotBlank() }
+        val footerLines = resolveStatementTemplate(
+            rawFooter, businessName, customerName, customerPhone, collectionDay, customerCity, routeNo, loan, payments, upiId
+        ).lines().filter { it.isNotBlank() }
+
+        val startColor = try { Color.parseColor(customProps["COLOR_START"] ?: "#0F172A") } catch (e: Exception) { Color.parseColor("#0F172A") }
+        val endColor = try { Color.parseColor(customProps["COLOR_END"] ?: "#1E1B4B") } catch (e: Exception) { Color.parseColor("#1E1B4B") }
+        val themeBorderColor = try { Color.parseColor(customProps["THEME_BORDER_COLOR"] ?: "#4F46E5") } catch (e: Exception) { Color.parseColor("#4F46E5") }
+
+        val width = 800
+        val headerHeight = 160
+        val maxBoxLines = maxOf(customerBoxLines.size, loanBoxLines.size, 3)
+        val infoSectionHeight = 110 + (maxBoxLines * 36)
+        val tableHeaderHeight = 60
+        val rowHeight = 50
+        val footerHeight = 110 + (footerLines.size.coerceAtLeast(2) * 24)
+        val minRows = 5
+        val rowsCount = maxOf(payments.size, minRows)
+        val totalHeight = headerHeight + infoSectionHeight + tableHeaderHeight + (rowsCount * rowHeight) + footerHeight
+
+        val bitmap = Bitmap.createBitmap(width, totalHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        // 1. Background
+        canvas.drawColor(Color.parseColor("#F8FAFC"))
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+        val dateTimeFormat = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+
+        // 2. Header Banner
+        val headerGradient = LinearGradient(
+            0f, 0f, width.toFloat(), headerHeight.toFloat(),
+            startColor,
+            endColor,
+            Shader.TileMode.CLAMP
+        )
+        paint.shader = headerGradient
+        canvas.drawRect(0f, 0f, width.toFloat(), headerHeight.toFloat(), paint)
+        paint.shader = null
+
+        // Header Text
+        paint.color = Color.WHITE
+        paint.textSize = 36f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.textAlign = Paint.Align.CENTER
+        canvas.drawText(resolvedHeaderTitle.uppercase(), width / 2f, 65f, paint)
+
+        paint.color = Color.parseColor("#94A3B8")
+        paint.textSize = 20f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+        canvas.drawText(resolvedHeaderSubtitle.uppercase(), width / 2f, 105f, paint)
+
+        paint.textSize = 16f
+        canvas.drawText("Generated on: ${dateTimeFormat.format(Date())}", width / 2f, 138f, paint)
+
+        // 3. Info Section (Customer & Loan Summary Boxes)
+        val boxTop = headerHeight + 25f
+        val boxBottom = headerHeight + infoSectionHeight - 25f
+
+        paint.color = Color.WHITE
+        paint.style = Paint.Style.FILL
+        val leftBox = RectF(30f, boxTop, 385f, boxBottom)
+        val rightBox = RectF(415f, boxTop, 770f, boxBottom)
+        canvas.drawRoundRect(leftBox, 16f, 16f, paint)
+        canvas.drawRoundRect(rightBox, 16f, 16f, paint)
+
+        paint.color = themeBorderColor
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f
+        canvas.drawRoundRect(leftBox, 16f, 16f, paint)
+        canvas.drawRoundRect(rightBox, 16f, 16f, paint)
+        paint.style = Paint.Style.FILL
+
+        // Customer Details Box Content
+        paint.textAlign = Paint.Align.LEFT
+        paint.color = Color.parseColor("#64748B")
+        paint.textSize = 16f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        canvas.drawText("CUSTOMER DETAILS", 50f, boxTop + 35f, paint)
+
+        var custLineY = boxTop + 72f
+        customerBoxLines.forEachIndexed { idx, line ->
+            if (idx == 0) {
+                paint.color = Color.parseColor("#0F172A")
+                paint.textSize = 21f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            } else {
+                paint.color = Color.parseColor("#334155")
+                paint.textSize = 18f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+            }
+            canvas.drawText(line.take(36), 50f, custLineY, paint)
+            custLineY += 34f
         }
-        val thTop = if (isClosedLoan) 470f else 460f
-        val thBottom = thTop + 45f
-        canvas.drawRect(40f, thTop, width.toFloat() - 40f, thBottom, thPaint)
-        canvas.drawRect(40f, thTop, width.toFloat() - 40f, thBottom, borderPaint)
-        
-        val thTextPaint = Paint().apply {
-            color = 0xFF334155.toInt()
-            textSize = 18f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            isAntiAlias = true
+
+        // Loan Summary Box Content
+        paint.color = Color.parseColor("#64748B")
+        paint.textSize = 16f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        canvas.drawText("LOAN SUMMARY", 435f, boxTop + 35f, paint)
+
+        val totalLoan = loan.loanAmount + loan.interestAmount
+        val balance = (totalLoan - loan.paidAmount).coerceAtLeast(0.0)
+
+        var loanLineY = boxTop + 72f
+        loanBoxLines.forEach { line ->
+            val lower = line.lowercase(Locale.getDefault())
+            when {
+                lower.contains("paid") -> {
+                    paint.color = Color.parseColor("#16A34A")
+                    paint.textSize = 18f
+                    paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                }
+                lower.contains("outstanding") || lower.contains("balance") -> {
+                    paint.color = if (balance > 0) Color.parseColor("#DC2626") else Color.parseColor("#16A34A")
+                    paint.textSize = 19f
+                    paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                }
+                lower.contains("total") || lower.contains("loan") -> {
+                    paint.color = Color.parseColor("#0F172A")
+                    paint.textSize = 18f
+                    paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                }
+                else -> {
+                    paint.color = Color.parseColor("#334155")
+                    paint.textSize = 17f
+                    paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+                }
+            }
+            canvas.drawText(line.take(36), 435f, loanLineY, paint)
+            loanLineY += 34f
         }
-        canvas.drawText("Week No", 60f, thTop + 30f, thTextPaint)
-        canvas.drawText("Date", 190f, thTop + 30f, thTextPaint)
-        canvas.drawText("Amnt Rec.", 400f, thTop + 30f, thTextPaint)
-        canvas.drawText("UPI / Cash", 600f, thTop + 30f, thTextPaint)
-        
-        var currentY = thBottom + 35f
-        
-        val rowPaint = Paint().apply {
-            color = 0xFF334155.toInt()
-            textSize = 18f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-            isAntiAlias = true
-        }
-        
-        val boldRowPaint = Paint().apply {
-            color = 0xFF16A34A.toInt() // Green
-            textSize = 18f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            isAntiAlias = true
-        }
-        
-        val rowDateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-        sortedPayments.forEachIndexed { index, p ->
-            val pDateStr = rowDateFormat.format(Date(p.paymentDate))
-            val isOnline = !p.upiTxnId.isNullOrEmpty() || 
-                           p.notes.contains("Online", ignoreCase = true) || 
-                           p.notes.contains("UPI", ignoreCase = true) || 
-                           p.notes.contains("GPay", ignoreCase = true) || 
-                           p.notes.contains("Bank", ignoreCase = true)
-            val pModeStr = if (isOnline) "UPI" else "Cash"
-            val weekLabel = if (p.weekNumber > 0) p.weekNumber.toString() else (index + 1).toString()
-            canvas.drawText(weekLabel, 60f, currentY, rowPaint)
-            canvas.drawText(pDateStr, 190f, currentY, rowPaint)
-            canvas.drawText("₹${p.amountPaid.toLong()}", 400f, currentY, boldRowPaint)
-            canvas.drawText(pModeStr, 600f, currentY, rowPaint)
-            
-            // draw divider
-            canvas.drawLine(40f, currentY + 15f, width.toFloat() - 40f, currentY + 15f, borderPaint)
-            currentY += 45f
-        }
-        
+
+        // 4. Table Header
+        val tableTop = (headerHeight + infoSectionHeight).toFloat()
+        paint.color = Color.parseColor("#1E293B")
+        val tableHeaderRect = RectF(30f, tableTop, 770f, tableTop + tableHeaderHeight)
+        canvas.drawRoundRect(tableHeaderRect, 10f, 10f, paint)
+
+        paint.color = Color.WHITE
+        paint.textSize = 18f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+
+        paint.textAlign = Paint.Align.LEFT
+        canvas.drawText("WEEK NO.", 55f, tableTop + 36f, paint)
+        canvas.drawText("PAYMENT DATE", 240f, tableTop + 36f, paint)
+        paint.textAlign = Paint.Align.RIGHT
+        canvas.drawText("AMOUNT PAID", 745f, tableTop + 36f, paint)
+
+        // 5. Table Rows
+        var currentY = tableTop + tableHeaderHeight
+        val sortedPayments = payments.sortedBy { it.weekNumber }
+
         if (sortedPayments.isEmpty()) {
-            canvas.drawText("No payments found.", 120f, 550f, rowPaint)
-            currentY = 600f
+            paint.color = Color.WHITE
+            canvas.drawRect(30f, currentY, 770f, currentY + (minRows * rowHeight), paint)
+
+            paint.color = Color.parseColor("#94A3B8")
+            paint.textAlign = Paint.Align.CENTER
+            paint.textSize = 20f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.ITALIC)
+            canvas.drawText("No payment records registered yet.", width / 2f, currentY + 120f, paint)
+            currentY += (minRows * rowHeight)
+        } else {
+            sortedPayments.forEachIndexed { index, payment ->
+                paint.color = if (index % 2 == 0) Color.WHITE else Color.parseColor("#F1F5F9")
+                canvas.drawRect(30f, currentY, 770f, currentY + rowHeight, paint)
+
+                paint.color = Color.parseColor("#E2E8F0")
+                paint.strokeWidth = 1f
+                canvas.drawLine(30f, currentY + rowHeight, 770f, currentY + rowHeight, paint)
+
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+                paint.textSize = 18f
+                paint.color = Color.parseColor("#1E293B")
+
+                paint.textAlign = Paint.Align.LEFT
+                canvas.drawText("Week ${payment.weekNumber}", 55f, currentY + 32f, paint)
+                canvas.drawText(dateFormat.format(Date(payment.paymentDate)), 240f, currentY + 32f, paint)
+
+                paint.textAlign = Paint.Align.RIGHT
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                paint.color = Color.parseColor("#16A34A")
+                canvas.drawText("₹${CurrencyFormatter.format(payment.amountPaid)}", 745f, currentY + 32f, paint)
+
+                currentY += rowHeight
+            }
+
+            val remainingDummyRows = minRows - sortedPayments.size
+            for (i in 0 until remainingDummyRows) {
+                val rowIdx = sortedPayments.size + i
+                paint.color = if (rowIdx % 2 == 0) Color.WHITE else Color.parseColor("#F1F5F9")
+                canvas.drawRect(30f, currentY, 770f, currentY + rowHeight, paint)
+                currentY += rowHeight
+            }
         }
-        
-        // Add "THANK YOU" at the end of the transaction history
-        val thankYouY = currentY + 50f
-        val thankYouPaint = Paint().apply {
-            color = 0xFF1E293B.toInt()
-            textSize = 24f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            isAntiAlias = true
-            textAlign = Align.CENTER
+
+        // Table outer border
+        paint.color = Color.parseColor("#CBD5E1")
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f
+        canvas.drawRect(30f, tableTop + tableHeaderHeight, 770f, currentY, paint)
+        paint.style = Paint.Style.FILL
+
+        // 6. Footer
+        val footerCenterY = currentY + 46f
+        paint.textAlign = Paint.Align.CENTER
+        footerLines.forEachIndexed { idx, line ->
+            if (idx == 0) {
+                paint.color = Color.parseColor("#4F46E5")
+                paint.textSize = 20f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            } else {
+                paint.color = Color.parseColor("#64748B")
+                paint.textSize = 15f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+            }
+            canvas.drawText(line.take(65), width / 2f, footerCenterY + (idx * 26f), paint)
         }
-        canvas.drawText("THANK YOU", (width / 2).toFloat(), thankYouY, thankYouPaint)
-        
-        bitmap
+
+        val statusBadgeY = footerCenterY + (footerLines.size.coerceAtLeast(1) * 26f) + 8f
+        paint.color = if (loan.status == "PAID") Color.parseColor("#16A34A") else Color.parseColor("#EA580C")
+        paint.textSize = 16f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        canvas.drawText("ACCOUNT STATUS: ${loan.status}", width / 2f, statusBadgeY, paint)
+
+        return bitmap
     }
 
-    private fun truncateText(text: String, paint: Paint, maxWidth: Float): String {
-        val textPaint = TextPaint(paint)
-        return TextUtils.ellipsize(text, textPaint, maxWidth, TextUtils.TruncateAt.END).toString()
+    fun shareStatementBitmap(context: Context, bitmap: Bitmap, customerName: String) {
+        try {
+            val cachePath = File(context.cacheDir, "statements")
+            cachePath.mkdirs()
+            val cleanName = customerName.replace(Regex("[^a-zA-Z0-9]"), "_")
+            val file = File(cachePath, "Statement_${cleanName}.png")
+            val stream = FileOutputStream(file)
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+            stream.close()
+
+            val contentUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+
+            if (contentUri != null) {
+                val shareIntent = Intent().apply {
+                    action = Intent.ACTION_SEND
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    setDataAndType(contentUri, context.contentResolver.getType(contentUri))
+                    putExtra(Intent.EXTRA_STREAM, contentUri)
+                    putExtra(Intent.EXTRA_TEXT, "Customer Account Statement for $customerName")
+                    type = "image/png"
+                }
+                context.startActivity(
+                    Intent.createChooser(shareIntent, "Share Account Statement via")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }
-

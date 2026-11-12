@@ -84,9 +84,15 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
     val currentTemplateLang by viewModel.currentTemplateLanguage.collectAsStateWithLifecycle()
 
     var customGroupName by remember { mutableStateOf("") }
-    val scrollState = rememberScrollState()
-
+    val mainMenuScrollState = rememberScrollState()
     val activeSubPage by viewModel.settingsSubPage.collectAsStateWithLifecycle()
+    val subPageScrollState = remember(activeSubPage) { androidx.compose.foundation.ScrollState(0) }
+
+    LaunchedEffect(activeSubPage) {
+        if (activeSubPage != null) {
+            subPageScrollState.scrollTo(0)
+        }
+    }
 
     androidx.activity.compose.BackHandler(enabled = activeSubPage != null) {
         viewModel.setSettingsSubPage(null)
@@ -123,13 +129,12 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                         )
                     }
                 }
-            } else {
+            } else if (activeSubPage == null) {
                 Column(
-                    modifier = Modifier.fillMaxSize().verticalScroll(scrollState),
+                    modifier = Modifier.fillMaxSize().verticalScroll(mainMenuScrollState),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    if (activeSubPage == null) {
-                        // Group 1: Business & Account Setup
+                    // Group 1: Business & Account Setup
                         Text(translate("Business & Account Setup", language), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 8.dp, bottom = 4.dp, start = 4.dp))
 
                         AnimatedSlideInItem(index = 0) {
@@ -168,6 +173,18 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                                 iconBgColor = Color(0xFFFFEDD5),
                                 onClick = { viewModel.setSettingsSubPage("templates") },
                                 testTag = "settings_templates_btn"
+                            )
+                        }
+
+                        AnimatedSlideInItem(index = 2) {
+                            SettingsMenuCard(
+                                title = translate("Statement Template", language),
+                                subtitle = translate("Virtual statement format preview, header, footer & loan placeholders", language),
+                                icon = Icons.Default.Description,
+                                iconTint = Color(0xFF4F46E5),
+                                iconBgColor = Color(0xFFE0E7FF),
+                                onClick = { viewModel.setSettingsSubPage("statement_template") },
+                                testTag = "settings_statement_template_btn"
                             )
                         }
 
@@ -237,10 +254,78 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                             )
                         }
 
+                        val showOverdueDots by viewModel.showOverdueDots.collectAsStateWithLifecycle()
+                        AnimatedSlideInItem(index = 7) {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("settings_overdue_dots_card")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .background(Color(0xFFFFF7ED), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(9.dp)
+                                                    .background(Color(0xFFF97316), CircleShape)
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(9.dp)
+                                                    .background(Color(0xFFEF4444), CircleShape)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(16.dp))
+                                    Column(
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = translate("Non-Payment Dots Under Route No", language),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = ColorSlateDark
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = translate("Show red & orange non-payment dots under customer route number", language),
+                                            fontSize = 11.sp,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                    Switch(
+                                        checked = showOverdueDots,
+                                        onCheckedChange = { viewModel.setShowOverdueDots(it) },
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = Color.White,
+                                            checkedTrackColor = Color(0xFFF97316)
+                                        ),
+                                        modifier = Modifier.testTag("settings_overdue_dots_switch")
+                                    )
+                                }
+                            }
+                        }
+
                         // Group 4: Cloud, AI & Network Sync
                         Text(translate("Cloud, AI & Network Sync", language), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 16.dp, bottom = 4.dp, start = 4.dp))
 
-                        AnimatedSlideInItem(index = 7) {
+                        AnimatedSlideInItem(index = 8) {
                             SettingsMenuCard(
                                 title = translate("Firebase Unified Operations", language),
                                 subtitle = translate("Manage live Analytics, In-App Campaigns, Remote Config & Diagnostics", language),
@@ -450,8 +535,13 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                                 testTag = "settings_sign_out_btn"
                             )
                         }
-                    } else {
-                        when (activeSubPage) {
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxSize().verticalScroll(subPageScrollState),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    when (activeSubPage) {
                 "language" -> LanguageSubPage(language = language, viewModel = viewModel, appColors = appColors)
                 "font" -> FontSizeSubPage(language = language, fontSizeScale = fontSizeScale, fontStyleKey = fontStyleKey, viewModel = viewModel, appColors = appColors)
                 "business" -> BusinessUpiSubPage(
@@ -498,6 +588,11 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                     smsReminderTemplate = smsReminderTemplate,
                     whatsappReminderTemplate = whatsappReminderTemplate
                 )
+                "statement_template" -> StatementTemplateSubPage(
+                    language = language,
+                    viewModel = viewModel,
+                    appColors = appColors
+                )
 
                 "backup" -> BackupSubPage(
                     language = language,
@@ -539,8 +634,7 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                     )
                 }
             }
-        }
-    }
+                }
             }
         }
     }

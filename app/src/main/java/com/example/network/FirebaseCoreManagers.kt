@@ -128,25 +128,57 @@ object FirebaseConnectionManager {
     }
 
     /**
-     * Tests full Realtime Database read/write latency and endpoint connectivity
+     * Tests full Cloud Firestore `(default)` read/write latency and endpoint connectivity,
+     * and issues a one-way delete of any legacy customer/ping branches in RTDB.
      */
-    fun testRtdbPing(onResult: (Boolean, String) -> Unit) {
+    fun testFirestorePing(onResult: (Boolean, String) -> Unit) {
         val startTime = System.currentTimeMillis()
-        val pingRef = database.getReference("rtdb_pings").child(auth.currentUser?.uid ?: "anon_tester")
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val pingDocRef = firestore.collection("diagnostics")
+            .document(auth.currentUser?.uid ?: "connection_ping")
         val timestamp = System.currentTimeMillis()
-        
-        pingRef.setValue(mapOf("ping_time" to timestamp, "device" to android.os.Build.MODEL))
+
+        // Strictly one-way cleanup of any legacy RTDB nodes (never create anything in RTDB)
+        try {
+            database.getReference("rtdb_pings").removeValue()
+            database.getReference("day_branches").removeValue()
+            database.getReference("ledger_csv").removeValue()
+            database.getReference("days").removeValue()
+            database.getReference("all_transactions").removeValue()
+            database.getReference("customers").removeValue()
+        } catch (_: Exception) {}
+
+        val payload = mapOf(
+            "ping_time" to timestamp,
+            "device" to android.os.Build.MODEL,
+            "database" to "(default)"
+        )
+
+        pingDocRef.set(payload)
             .addOnSuccessListener {
                 val latency = System.currentTimeMillis() - startTime
-                pingRef.get().addOnSuccessListener { snapshot ->
-                    onResult(true, "RTDB Live! Ping: ${latency}ms | Path: /rtdb_pings | Write/Read Verified")
+                pingDocRef.get().addOnSuccessListener {
+                    onResult(
+                        true,
+                        "Firestore (default) Live! Ping: ${latency}ms | Path: /diagnostics | Write/Read Verified (RTDB customer nodes cleared)"
+                    )
                 }.addOnFailureListener { e ->
-                    onResult(true, "RTDB Write OK (${latency}ms), Read error: ${e.message}")
+                    onResult(true, "Firestore (default) Write OK (${latency}ms), Read notice: ${e.message}")
                 }
             }
             .addOnFailureListener { e ->
-                onResult(false, "RTDB Write Failed: ${e.message ?: "Network timeout or permission denied"}")
+                onResult(
+                    false,
+                    "Firestore (default) Write Failed: ${e.message ?: "Check Firestore rules or network connectivity"}"
+                )
             }
+    }
+
+    /**
+     * Legacy alias so any existing caller tests Cloud Firestore `(default)` instead of writing to RTDB.
+     */
+    fun testRtdbPing(onResult: (Boolean, String) -> Unit) {
+        testFirestorePing(onResult)
     }
 
     /**

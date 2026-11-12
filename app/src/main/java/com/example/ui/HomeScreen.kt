@@ -2781,6 +2781,7 @@ fun CustomerOverviewCard(
     val appColors = LocalAppThemeColors.current
     val currentUserRole by viewModel.currentUserRole.collectAsStateWithLifecycle()
     val allPaymentsList by viewModel.allPayments.collectAsStateWithLifecycle()
+    val showOverdueDots by viewModel.showOverdueDots.collectAsStateWithLifecycle()
 
     // Compute overdue dot color for active loans:
     // - No dot if paying normally (< 2 weeks missed)
@@ -2854,7 +2855,7 @@ fun CustomerOverviewCard(
                         color = ColorSlateDark
                     )
                     Spacer(modifier = Modifier.height(5.dp))
-                    if (overdueDotColor != null) {
+                    if (showOverdueDots && overdueDotColor != null) {
                         Box(
                             modifier = Modifier
                                 .size(8.dp)

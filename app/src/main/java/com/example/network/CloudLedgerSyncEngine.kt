@@ -72,7 +72,27 @@ object CloudLedgerSyncEngine {
     private const val KEY_INITIAL_MIGRATION_DONE = "firestore_initial_migration_v2_done"
     private const val KEY_PENDING_OFFLINE_EDITS = "firestore_pending_offline_edits_json"
     private const val KEY_LAST_ARCHIVE_CHECK_AT = "firestore_last_archive_check_ms"
-    private const val KEY_LEGACY_RTDB_PURGED = "rtdb_legacy_giant_nodes_purged_v2"
+    private const val KEY_LEGACY_RTDB_PURGED = "rtdb_legacy_giant_nodes_purged_v3"
+
+    private val LEGACY_RTDB_CUSTOMER_NODES = listOf(
+        "day_branches",
+        "ledger_csv",
+        "days",
+        "all_transactions",
+        "customers",
+        "loan_cycles",
+        "weekly_payments",
+        "loans",
+        "payments",
+        "edit_logs",
+        "master_databases",
+        "master_backup",
+        "dead_letter_queue",
+        "ledger",
+        "rtdb_pings",
+        "sync_triggers",
+        "devices"
+    )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val flushMutex = Mutex()
@@ -88,8 +108,7 @@ object CloudLedgerSyncEngine {
     private val _isFetchingPastArchive = MutableStateFlow(false)
     val isFetchingPastArchive = _isFetchingPastArchive.asStateFlow()
 
-    private var presenceListener: ValueEventListener? = null
-    private var syncTriggerListener: ValueEventListener? = null
+    private var firestoreTriggerListener: com.google.firebase.firestore.ListenerRegistration? = null
     private var lastAppliedTriggerTime: Long = 0L
     private var isPresenceInitialized = false
     private var lastPresenceStatusTime = 0L
@@ -102,32 +121,55 @@ object CloudLedgerSyncEngine {
         }
     }
 
-    private fun getFirestore(): FirebaseFirestore {
-        return try {
-            val ctx = com.google.firebase.FirebaseApp.getInstance().applicationContext
-            val resId = ctx.resources.getIdentifier("firestore_database_id", "string", ctx.packageName)
-            if (resId != 0) {
-                val dbId = ctx.getString(resId).trim()
-                if (dbId.isNotBlank() && dbId != "(default)") {
-                    return FirebaseFirestore.getInstance(dbId)
-                }
-            }
-            FirebaseFirestore.getInstance()
-        } catch (e: Throwable) {
-            FirebaseFirestore.getInstance()
-        }
+    /**
+     * Always returns the `(default)` Cloud Firestore database instance so all customer,
+     * loan, payment, cash log, and audit documents are stored in the primary `(default)` Firestore database.
+     */
+    fun getFirestore(): FirebaseFirestore {
+        return FirebaseFirestore.getInstance()
     }
+
     private fun getStorage(): FirebaseStorage = FirebaseStorage.getInstance()
 
     /**
-     * Purges any unacknowledged oversized RTDB writes (`day_branches` / `ledger_csv` from v49)
-     * from memory and local disk persistence so `PersistentConnectionImpl.restoreState()`
-     * never triggers `JsonMapper.serializeJsonValue` `OutOfMemoryError` (37.7 MB allocation).
+     * Best-effort Firebase Auth check: if no user is currently signed in, attempts anonymous sign-in
+     * briefly, but never blocks Firestore operations if anonymous auth is disabled on the project.
      */
-    fun purgeLegacyRtdbQueuesAndNodes(context: Context, removeRemoteLegacyBranches: Boolean = false) {
+    private fun ensureFirestoreAuthBestEffort() {
+        try {
+            val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+            if (auth.currentUser == null) {
+                Tasks.await(auth.signInAnonymously(), 4, TimeUnit.SECONDS)
+            }
+        } catch (_: Throwable) {
+            // Proceed even if anonymous sign-in is disabled; Firestore rules or existing session will handle it
+        }
+    }
+
+    /**
+     * Marks that a local bulk CSV/Excel/JSON import occurred so the next reconciliation
+     * performs a full UUID push to Cloud Firestore `(default)`.
+     */
+    fun markBulkImportNeedsCloudSync(context: Context) {
         try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            if (!prefs.getBoolean("rtdb_local_disk_cache_purged_v2", false)) {
+            prefs.edit().putBoolean(KEY_INITIAL_MIGRATION_DONE, false).apply()
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Strictly one-way cleanup of RTDB: purges any unacknowledged local RTDB writes and
+     * deletes any legacy customer/ledger/ping/sync nodes from RTDB without EVER writing to RTDB.
+     * Preserves `/versionId`, `/update_config`, and `/app_password` for app release checks.
+     */
+    fun purgeLegacyRtdbQueuesAndNodes(
+        context: Context,
+        removeRemoteLegacyBranches: Boolean = false,
+        forceRemotePurge: Boolean = false
+    ) {
+        try {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (!prefs.getBoolean("rtdb_local_disk_cache_purged_v3", false)) {
                 try {
                     context.databaseList()?.forEach { dbName ->
                         if (dbName.contains("firebasedatabase", ignoreCase = true) ||
@@ -138,7 +180,7 @@ object CloudLedgerSyncEngine {
                         }
                     }
                 } catch (_: Exception) {}
-                prefs.edit().putBoolean("rtdb_local_disk_cache_purged_v2", true).apply()
+                prefs.edit().putBoolean("rtdb_local_disk_cache_purged_v3", true).apply()
             }
 
             val rtdb = getRtdb()
@@ -146,14 +188,14 @@ object CloudLedgerSyncEngine {
                 rtdb.purgeOutstandingWrites()
             } catch (_: Exception) {}
 
-            if (removeRemoteLegacyBranches && !prefs.getBoolean(KEY_LEGACY_RTDB_PURGED, false)) {
-                rtdb.getReference("day_branches").removeValue()
-                rtdb.getReference("ledger_csv").removeValue()
-                rtdb.getReference("days").removeValue()
-                rtdb.getReference("all_transactions").removeValue()
-                rtdb.getReference("rtdb_pings").removeValue()
+            if (forceRemotePurge || (removeRemoteLegacyBranches && !prefs.getBoolean(KEY_LEGACY_RTDB_PURGED, false))) {
+                for (node in LEGACY_RTDB_CUSTOMER_NODES) {
+                    try {
+                        rtdb.getReference(node).removeValue()
+                    } catch (_: Exception) {}
+                }
                 prefs.edit().putBoolean(KEY_LEGACY_RTDB_PURGED, true).apply()
-                Log.i(TAG, "Removed bloated legacy RTDB server nodes (/day_branches, /ledger_csv, /days, /all_transactions)")
+                Log.i(TAG, "Deleted all legacy customer/ledger/sync nodes from RTDB (one-way delete only).")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Legacy RTDB purge notice: ${e.message}")
@@ -193,11 +235,9 @@ object CloudLedgerSyncEngine {
     }
 
     /**
-     * Registers this device under RTDB `devices/{gmailKey}/{deviceId}` with automatic
-     * `.info/connected` + `onDisconnect()` online/offline status switching, and listens ONLY
-     * to the tiny `sync_triggers/latest` node (~150 bytes) for live delta updates.
-     * Does NOT attach a continuous listener to `/devices` (which previously caused an echo loop
-     * re-downloading the entire devices tree on every edit).
+     * Registers this device in Cloud Firestore `(default)` under `devices/{deviceId}` and listens
+     * to `sync_metadata/latest_trigger` in Cloud Firestore for real-time single-document delta updates.
+     * Never writes any customer, trigger, or device data to RTDB (only purges legacy RTDB nodes).
      */
     fun initializeDevicePresenceAndTriggers(
         context: Context,
@@ -206,122 +246,97 @@ object CloudLedgerSyncEngine {
     ) {
         try {
             refreshPendingCount(context)
-            purgeLegacyRtdbQueuesAndNodes(context, removeRemoteLegacyBranches = false)
-            if (isPresenceInitialized && presenceListener != null && syncTriggerListener != null) {
+            purgeLegacyRtdbQueuesAndNodes(context, removeRemoteLegacyBranches = true)
+            if (isPresenceInitialized && firestoreTriggerListener != null) {
                 return
             }
 
-            val rtdb = getRtdb()
+            val firestore = getFirestore()
             val email = getCurrentUserEmail(context)
             val username = getCurrentUsername(context)
-            val gmailKey = sanitizeGmailKey(email)
             val myDeviceId = getDeviceId(context)
-            val deviceRef = rtdb.getReference("devices").child(gmailKey).child(myDeviceId)
+            val now = System.currentTimeMillis()
 
-            // 1. Bind .info/connected for automatic online/offline presence
-            val connectedRef = rtdb.getReference(".info/connected")
-            presenceListener?.let { connectedRef.removeEventListener(it) }
-            val pListener = object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val connected = snapshot.getValue(Boolean::class.java) ?: false
-                    val now = System.currentTimeMillis()
-                    if (connected) {
-                        val disconnectPayload = mapOf(
-                            "status" to "offline",
-                            "lastActiveSessionTime" to now,
-                            "lastActiveFormatted" to formatTimestamp(now)
-                        )
-                        deviceRef.onDisconnect().updateChildren(disconnectPayload)
-
-                        val onlinePayload = mutableMapOf<String, Any>(
-                            "username" to username,
-                            "userLoginId" to email,
-                            "deviceId" to myDeviceId,
-                            "deviceModel" to "${Build.MANUFACTURER} ${Build.MODEL}",
-                            "status" to "online",
-                            "lastActiveSessionTime" to now,
-                            "lastActiveFormatted" to formatTimestamp(now)
-                        )
-                        deviceRef.updateChildren(onlinePayload)
-
-                        // Attach FCM token once if not already saved
-                        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                        if (!prefs.getBoolean("fcm_token_synced_to_rtdb", false)) {
-                            try {
-                                FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
-                                    if (!token.isNullOrBlank()) {
-                                        deviceRef.child("fcmToken").setValue(token)
-                                        prefs.edit().putBoolean("fcm_token_synced_to_rtdb", true).apply()
-                                    }
-                                }
-                            } catch (_: Exception) {}
+            // 1. Update device presence in Cloud Firestore `(default)` -> `devices/{myDeviceId}`
+            scope.launch {
+                try {
+                    ensureFirestoreAuthBestEffort()
+                    val onlinePayload = mutableMapOf<String, Any>(
+                        "username" to username,
+                        "userLoginId" to email,
+                        "deviceId" to myDeviceId,
+                        "deviceModel" to "${Build.MANUFACTURER} ${Build.MODEL}",
+                        "status" to "online",
+                        "lastActiveSessionTime" to now,
+                        "lastActiveFormatted" to formatTimestamp(now)
+                    )
+                    try {
+                        val token = Tasks.await(FirebaseMessaging.getInstance().token, 4, TimeUnit.SECONDS)
+                        if (!token.isNullOrBlank()) {
+                            onlinePayload["fcmToken"] = token
                         }
-                    }
+                    } catch (_: Exception) {}
+
+                    firestore.collection("devices")
+                        .document(myDeviceId)
+                        .set(onlinePayload, SetOptions.merge())
+                } catch (e: Exception) {
+                    Log.w(TAG, "Firestore device registration notice: ${e.message}")
                 }
-
-                override fun onCancelled(error: DatabaseError) {}
             }
-            presenceListener = pListener
-            connectedRef.addValueEventListener(pListener)
 
-            // 2. Watch `sync_triggers/latest` (~150 bytes) for instant single-document delta pulls when online peers edit data
-            val triggerRef = rtdb.getReference("sync_triggers").child("latest")
-            syncTriggerListener?.let { triggerRef.removeEventListener(it) }
-            val tListener = object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    if (!snapshot.exists()) return
-                    val sourceDevice = snapshot.child("sourceDeviceId").getValue(String::class.java).orEmpty()
-                    val triggerTime = snapshot.child("lastModified").getValue(Long::class.java) ?: 0L
-                    if (sourceDevice == myDeviceId || triggerTime <= lastAppliedTriggerTime) return
+            // 2. Watch `sync_metadata/latest_trigger` in Cloud Firestore for instant single-document delta pulls
+            firestoreTriggerListener?.remove()
+            firestoreTriggerListener = firestore.collection("sync_metadata")
+                .document("latest_trigger")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    val sourceDevice = snapshot.getString("sourceDeviceId").orEmpty()
+                    val triggerTime = snapshot.getLong("lastModified") ?: 0L
+                    if (sourceDevice == myDeviceId || triggerTime <= lastAppliedTriggerTime) return@addSnapshotListener
                     lastAppliedTriggerTime = triggerTime
                     if (_onlinePeerCount.value == 0) {
                         _onlinePeerCount.value = 1
                     }
 
-                    val entityType = snapshot.child("entityType").getValue(String::class.java).orEmpty()
-                    val entityUuid = snapshot.child("entityUuid").getValue(String::class.java).orEmpty()
-                    val action = snapshot.child("action").getValue(String::class.java) ?: "UPSERT"
+                    val entityType = snapshot.getString("entityType").orEmpty()
+                    val entityUuid = snapshot.getString("entityUuid").orEmpty()
+                    val action = snapshot.getString("action") ?: "UPSERT"
 
                     if (entityType.isNotBlank() && entityUuid.isNotBlank()) {
                         scope.launch {
                             try {
                                 pullSingleEntityFromFirestore(context, db, entityType, entityUuid, action)
-                                onStatusUpdate("Synced live change ($entityType)")
+                                onStatusUpdate("Synced live change from Firestore ($entityType)")
                             } catch (e: Exception) {
-                                Log.w(TAG, "Delta trigger pull failed: ${e.message}")
+                                Log.w(TAG, "Firestore delta trigger pull failed: ${e.message}")
                             }
                         }
                     }
                 }
-
-                override fun onCancelled(error: DatabaseError) {}
-            }
-            syncTriggerListener = tListener
-            triggerRef.addValueEventListener(tListener)
             isPresenceInitialized = true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize device presence: ${e.message}")
+            Log.e(TAG, "Failed to initialize Firestore device presence: ${e.message}")
         }
     }
 
     /**
-     * Marks this device as `"online"` or `"offline"` on lifecycle transitions (throttled to avoid spam).
+     * Marks this device as `"online"` or `"offline"` in Cloud Firestore `devices/{deviceId}` (throttled).
      */
     fun updateDeviceOnlineStatus(context: Context, isOnline: Boolean) {
         try {
             val now = System.currentTimeMillis()
             if (isOnline && (now - lastPresenceStatusTime) < 30_000L) return
             lastPresenceStatusTime = now
-            val rtdb = getRtdb()
-            val email = getCurrentUserEmail(context)
-            val gmailKey = sanitizeGmailKey(email)
+            val firestore = getFirestore()
             val myDeviceId = getDeviceId(context)
             val updates = mapOf(
+                "deviceId" to myDeviceId,
                 "status" to if (isOnline) "online" else "offline",
                 "lastActiveSessionTime" to now,
                 "lastActiveFormatted" to formatTimestamp(now)
             )
-            rtdb.getReference("devices").child(gmailKey).child(myDeviceId).updateChildren(updates)
+            firestore.collection("devices").document(myDeviceId).set(updates, SetOptions.merge())
         } catch (_: Exception) {}
     }
 
@@ -438,48 +453,53 @@ object CloudLedgerSyncEngine {
         reconcileMutex.withLock {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val myDeviceId = getDeviceId(context)
-            val email = getCurrentUserEmail(context)
             val myLastSyncedAt = prefs.getLong(KEY_LAST_SYNCED_AT, 0L)
-            val isInitialMigrationDone = prefs.getBoolean(KEY_INITIAL_MIGRATION_DONE, false)
+            var isInitialMigrationDone = prefs.getBoolean(KEY_INITIAL_MIGRATION_DONE, false)
 
-            val hasFirebaseUser = try {
-                com.google.firebase.auth.FirebaseAuth.getInstance().currentUser != null
-            } catch (_: Throwable) {
-                false
-            }
-            if (!hasFirebaseUser) {
-                val totalCust = try { db.collectionDao().getAllCustomersOnce().size } catch (_: Throwable) { 0 }
-                return@withLock "Local Ready ($totalCust borrowers)"
-            }
+            ensureFirestoreAuthBestEffort()
+            purgeLegacyRtdbQueuesAndNodes(context, removeRemoteLegacyBranches = true)
 
-            val rtdb = getRtdb()
             val firestore = getFirestore()
+            val localCustCount = try { db.collectionDao().getAllCustomersOnce().size } catch (_: Throwable) { 0 }
 
-            // Step 0: Only run full UUID reconciliation if initial migration was never done OR user explicitly tapped Force Full Resync
+            // If local database has customers, verify whether Cloud Firestore `(default)` is empty
+            if (isInitialMigrationDone && !forceFullMigrationCheck && localCustCount > 0) {
+                try {
+                    val existingCloudSample = Tasks.await(
+                        firestore.collection("customers").limit(1).get(),
+                        6,
+                        TimeUnit.SECONDS
+                    )
+                    if (existingCloudSample.isEmpty) {
+                        Log.i(TAG, "Cloud Firestore `(default)` /customers is empty while local has $localCustCount borrowers; forcing full upload.")
+                        isInitialMigrationDone = false
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not sample Firestore /customers: ${e.message}")
+                }
+            }
+
+            // Step 0: Run full UUID reconciliation if initial migration was never done, Firestore is empty, OR user tapped Force Full Resync
             if (!isInitialMigrationDone || forceFullMigrationCheck) {
-                onProgress("Synchronizing local ledger with Cloud Firestore...")
+                onProgress("Synchronizing local ledger with Cloud Firestore (default)...")
                 val summary = performFullBidirectionalUuidReconciliation(context, db, onProgress)
                 prefs.edit()
                     .putBoolean(KEY_INITIAL_MIGRATION_DONE, true)
                     .putLong(KEY_LAST_SYNCED_AT, System.currentTimeMillis())
                     .apply()
-                purgeLegacyRtdbQueuesAndNodes(context, removeRemoteLegacyBranches = true)
                 return@withLock summary
             }
 
-            purgeLegacyRtdbQueuesAndNodes(context, removeRemoteLegacyBranches = true)
-
-            // Step 1: Check lightweight RTDB `devices` branch once to see if ANY other device modified data after myLastSyncedAt
-            onProgress("Checking connected device timestamps...")
-            val devicesSnap = Tasks.await(rtdb.getReference("devices").get(), 6, TimeUnit.SECONDS)
+            // Step 1: Check Cloud Firestore `devices` collection to see if ANY other device modified data after myLastSyncedAt
+            onProgress("Checking connected device timestamps in Firestore...")
             var maxOtherDeviceModified = 0L
             var peersOnline = 0
-
-            for (gSnap in devicesSnap.children) {
-                for (dSnap in gSnap.children) {
-                    val devId = dSnap.child("deviceId").getValue(String::class.java) ?: dSnap.key.orEmpty()
-                    val devStatus = dSnap.child("status").getValue(String::class.java) ?: "offline"
-                    val devLastMod = dSnap.child("lastModified").getValue(Long::class.java) ?: 0L
+            try {
+                val devicesSnap = Tasks.await(firestore.collection("devices").get(), 6, TimeUnit.SECONDS)
+                for (dDoc in devicesSnap.documents) {
+                    val devId = dDoc.getString("deviceId") ?: dDoc.id
+                    val devStatus = dDoc.getString("status") ?: "offline"
+                    val devLastMod = dDoc.getLong("lastModified") ?: 0L
                     if (devId != myDeviceId) {
                         if (devStatus.equals("online", ignoreCase = true)) {
                             peersOnline++
@@ -489,16 +509,18 @@ object CloudLedgerSyncEngine {
                         }
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Firestore devices check notice: ${e.message}")
             }
             _onlinePeerCount.value = peersOnline
 
             val pendingEdits = getPendingOfflineEdits(context)
             val otherDeviceModifiedSinceLastSync = maxOtherDeviceModified > myLastSyncedAt
 
-            // PERMUTATION 1: No other device modified data AND no pending local offline edits -> 0 Firestore reads/writes!
+            // PERMUTATION 1: No other device modified data AND no pending local offline edits -> 0 extra reads/writes!
             if (!otherDeviceModifiedSinceLastSync && pendingEdits.isEmpty()) {
                 val totalCust = db.collectionDao().getAllCustomersOnce().size
-                return@withLock "Synced ($totalCust borrowers • 0 cloud reads needed)"
+                return@withLock "Firestore Synced ($totalCust borrowers • Up to date)"
             }
 
             // PERMUTATION 2: No other device modified data, BUT this device has pending offline edits -> 0 audit reads, direct batch push!
@@ -508,7 +530,7 @@ object CloudLedgerSyncEngine {
                 val now = System.currentTimeMillis()
                 prefs.edit().putLong(KEY_LAST_SYNCED_AT, now).apply()
                 val totalCust = db.collectionDao().getAllCustomersOnce().size
-                return@withLock "Synced (${pendingEdits.size} local changes uploaded • $totalCust borrowers)"
+                return@withLock "Firestore Synced (${pendingEdits.size} local changes uploaded • $totalCust borrowers)"
             }
 
             // PERMUTATION 3 & 4: Another device HAS modified data since myLastSyncedAt!
@@ -605,19 +627,12 @@ object CloudLedgerSyncEngine {
             val pending = getPendingOfflineEdits(context)
             if (pending.isEmpty()) return@withLock
 
-            val hasFirebaseUser = try {
-                com.google.firebase.auth.FirebaseAuth.getInstance().currentUser != null
-            } catch (_: Throwable) {
-                false
-            }
-            if (!hasFirebaseUser) return@withLock
+            ensureFirestoreAuthBestEffort()
 
             val firestore = getFirestore()
-            val rtdb = getRtdb()
             val myDeviceId = getDeviceId(context)
             val email = getCurrentUserEmail(context)
             val username = getCurrentUsername(context)
-            val gmailKey = sanitizeGmailKey(email)
 
             val dao = db.collectionDao()
             val needCustomers = pending.any { it.entityType == "CUSTOMER" || it.entityType == "LOAN_CYCLE" || it.entityType == "WEEKLY_PAYMENT" }
@@ -779,13 +794,16 @@ object CloudLedgerSyncEngine {
                 prefs.edit().putLong(KEY_LAST_SYNCED_AT, maxOf(now, latestModificationTime)).apply()
 
                 val devUpdates = mapOf(
+                    "deviceId" to myDeviceId,
+                    "username" to username,
+                    "userLoginId" to email,
                     "lastModified" to latestModificationTime,
                     "lastModifiedFormatted" to formatTimestamp(latestModificationTime),
                     "lastActiveSessionTime" to now,
                     "lastActiveFormatted" to formatTimestamp(now),
                     "status" to "online"
                 )
-                rtdb.getReference("devices").child(gmailKey).child(myDeviceId).updateChildren(devUpdates)
+                firestore.collection("devices").document(myDeviceId).set(devUpdates, SetOptions.merge())
 
                 if (lastPushedEdit != null) {
                     val triggerMap = mapOf(
@@ -797,7 +815,7 @@ object CloudLedgerSyncEngine {
                         "lastModified" to latestModificationTime,
                         "sourceDeviceId" to myDeviceId
                     )
-                    rtdb.getReference("sync_triggers").child("latest").setValue(triggerMap)
+                    firestore.collection("sync_metadata").document("latest_trigger").set(triggerMap)
                 }
             }
         }
@@ -840,8 +858,8 @@ object CloudLedgerSyncEngine {
                     collectionDay = doc.getString("collectionDay") ?: existingLocal?.collectionDay ?: "Monday",
                     createdAt = doc.getLong("createdAt") ?: existingLocal?.createdAt ?: System.currentTimeMillis(),
                     city = doc.getString("city") ?: existingLocal?.city.orEmpty(),
-                    smsWeeklyReminder = doc.getBoolean("smsWeeklyReminder") ?: existingLocal?.smsWeeklyReminder ?: true,
-                    smsConfirmationOfEntry = doc.getBoolean("smsConfirmationOfEntry") ?: existingLocal?.smsConfirmationOfEntry ?: true,
+                    smsWeeklyReminder = doc.getBoolean("smsWeeklyReminder") ?: existingLocal?.smsWeeklyReminder ?: false,
+                    smsConfirmationOfEntry = doc.getBoolean("smsConfirmationOfEntry") ?: existingLocal?.smsConfirmationOfEntry ?: false,
                     autoWeeklySms = doc.getBoolean("autoWeeklySms") ?: false,
                     autoWeeklyWhatsapp = doc.getBoolean("autoWeeklyWhatsapp") ?: false,
                     upiNameAlias = doc.getString("upiNameAlias").orEmpty(),
@@ -943,15 +961,20 @@ object CloudLedgerSyncEngine {
         db: AppDatabase,
         onProgress: (String) -> Unit = {}
     ): String = withContext(Dispatchers.IO) {
+        ensureFirestoreAuthBestEffort()
         val firestore = getFirestore()
-        val rtdb = getRtdb()
         val dao = db.collectionDao()
         val myDeviceId = getDeviceId(context)
         val email = getCurrentUserEmail(context)
-        val gmailKey = sanitizeGmailKey(email)
+        val username = getCurrentUsername(context)
+
+        // First flush any queued offline edits so Firestore has the newest local mutations
+        try {
+            flushPendingEditsWithConflictCheck(context, db)
+        } catch (_: Exception) {}
 
         // 1. Customers
-        onProgress("Reconciling customers by UUID with Cloud Firestore...")
+        onProgress("Reconciling customers by UUID with Cloud Firestore (default)...")
         val localCustomers = dao.getAllCustomersOnce()
         val localCustByUuid = localCustomers.associateBy { it.uuid }.toMutableMap()
         val cloudCustSnap = Tasks.await(firestore.collection("customers").get(), 12, TimeUnit.SECONDS)
@@ -983,8 +1006,8 @@ object CloudLedgerSyncEngine {
                     collectionDay = doc.getString("collectionDay") ?: local?.collectionDay ?: "Monday",
                     createdAt = doc.getLong("createdAt") ?: local?.createdAt ?: System.currentTimeMillis(),
                     city = doc.getString("city") ?: local?.city.orEmpty(),
-                    smsWeeklyReminder = doc.getBoolean("smsWeeklyReminder") ?: true,
-                    smsConfirmationOfEntry = doc.getBoolean("smsConfirmationOfEntry") ?: true,
+                    smsWeeklyReminder = doc.getBoolean("smsWeeklyReminder") ?: false,
+                    smsConfirmationOfEntry = doc.getBoolean("smsConfirmationOfEntry") ?: false,
                     autoWeeklySms = doc.getBoolean("autoWeeklySms") ?: false,
                     autoWeeklyWhatsapp = doc.getBoolean("autoWeeklyWhatsapp") ?: false,
                     upiNameAlias = doc.getString("upiNameAlias").orEmpty(),
@@ -1137,16 +1160,41 @@ object CloudLedgerSyncEngine {
             Tasks.await(batch.commit(), 15, TimeUnit.SECONDS)
         }
 
-        if (uploadedCount > 0) {
-            val now = System.currentTimeMillis()
-            rtdb.getReference("devices").child(gmailKey).child(myDeviceId).updateChildren(
+        val now = System.currentTimeMillis()
+        try {
+            firestore.collection("devices").document(myDeviceId).set(
                 mapOf(
+                    "deviceId" to myDeviceId,
+                    "username" to username,
+                    "userLoginId" to email,
                     "lastModified" to now,
                     "lastModifiedFormatted" to formatTimestamp(now),
+                    "lastActiveSessionTime" to now,
+                    "lastActiveFormatted" to formatTimestamp(now),
                     "status" to "online"
-                )
+                ),
+                SetOptions.merge()
             )
-        }
+            if (uploadedCount > 0) {
+                val logUuid = UUID.randomUUID().toString()
+                firestore.collection("audit_logs").document(logUuid).set(
+                    mapOf(
+                        "logUuid" to logUuid,
+                        "timestamp" to now,
+                        "dateTimeFormatted" to formatTimestamp(now),
+                        "deviceId" to myDeviceId,
+                        "username" to username,
+                        "userLoginId" to email,
+                        "entityType" to "LEDGER_SYNC",
+                        "entityUuid" to logUuid,
+                        "customerUuid" to "",
+                        "collectionDay" to "ALL",
+                        "action" to "FULL_RECONCILE",
+                        "summary" to "Uploaded $uploadedCount records to Firestore (default)"
+                    )
+                )
+            }
+        } catch (_: Exception) {}
 
         // Run 6-Month Past History Archiver at most once every 7 days in background
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -1162,7 +1210,7 @@ object CloudLedgerSyncEngine {
         }
 
         val finalCustCount = dao.getAllCustomersOnce().size
-        return@withContext "Synced ($finalCustCount borrowers • ↑$uploadedCount ↓$downloadedCount)"
+        return@withContext "Firestore Synced ($finalCustCount borrowers • ↑$uploadedCount ↓$downloadedCount)"
     }
 
     // =========================================================================

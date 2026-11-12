@@ -151,6 +151,7 @@ object SmsService {
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
 
+        val resolvedPhone = phone.ifBlank { customer.phone }
         val text = template
             .replace("{customer}", customer.name)
             .replace("{name}", customer.name)
@@ -161,7 +162,9 @@ object SmsService {
             .replace("{outstanding}", CurrencyFormatter.format(totalDue))
             .replace("{balance}", CurrencyFormatter.format(totalDue))
             .replace("{upi}", upiId)
-            .replace("{upi_link}", upiLink)
+            .replace("{phone}", resolvedPhone)
+            .replace("{phone_number}", resolvedPhone)
+            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 
@@ -186,6 +189,7 @@ object SmsService {
         val upiLink = getUpiLink(context, upiId, customer.name)
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
+        val resolvedPhone = phone.ifBlank { customer.phone }
 
         val text = template
             .replace("{customer}", customer.name)
@@ -197,7 +201,9 @@ object SmsService {
             .replace("{outstanding}", CurrencyFormatter.format(remaining))
             .replace("{balance}", CurrencyFormatter.format(remaining))
             .replace("{upi}", upiId)
-            .replace("{upi_link}", upiLink)
+            .replace("{phone}", resolvedPhone)
+            .replace("{phone_number}", resolvedPhone)
+            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 
@@ -219,6 +225,7 @@ object SmsService {
         val upiLink = getUpiLink(context, upiId, customer.name)
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
+        val resolvedPhone = phone.ifBlank { customer.phone }
 
         val text = template
             .replace("{customer}", customer.name)
@@ -228,7 +235,9 @@ object SmsService {
             .replace("{outstanding}", CurrencyFormatter.format(remaining))
             .replace("{balance}", CurrencyFormatter.format(remaining))
             .replace("{upi}", upiId)
-            .replace("{upi_link}", upiLink)
+            .replace("{phone}", resolvedPhone)
+            .replace("{phone_number}", resolvedPhone)
+            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 
@@ -280,6 +289,7 @@ object SmsService {
         val upiLink = getUpiLink(context, upiId, customer.name)
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
+        val resolvedPhone = phone.ifBlank { customer.phone }
 
         val text = template
             .replace("{customer}", customer.name)
@@ -289,7 +299,9 @@ object SmsService {
             .replace("{outstanding}", CurrencyFormatter.format(remaining))
             .replace("{balance}", CurrencyFormatter.format(remaining))
             .replace("{upi}", upiId)
-            .replace("{upi_link}", upiLink)
+            .replace("{phone}", resolvedPhone)
+            .replace("{phone_number}", resolvedPhone)
+            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 

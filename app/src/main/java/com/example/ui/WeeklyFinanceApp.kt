@@ -661,19 +661,24 @@ fun WeeklyFinanceApp(
                                             is Screen.RecordPayment -> "Collect Instalment"
                                             is Screen.Settings -> {
                                                 when (settingsSubPage) {
-                                                    "business_upi" -> "Business Profile & UPI Settings"
-                                                    "collection_days" -> "Collection Group Days"
-                                                    "templates" -> "Messages & Reminders"
-                                                    "theme" -> "App Theme & Fonts"
-                                                    "sync_backup" -> "Cloud Sync & Backups"
+                                                    "business", "business_upi" -> "Business Profile & UPI"
+                                                    "groups", "collection_days" -> "Collection Groups (Days)"
+                                                    "templates" -> "Message & Reminder Templates"
+                                                    "statement_template" -> "Statement Template"
+                                                    "sim" -> "SIM Card Preference"
                                                     "contacts_sync" -> "Google Contacts Sync"
-                                                    "ai_settings" -> "Easwar AI Settings"
-                                                    "troubleshooting" -> "System Troubleshooting"
-                                                    "system_updates" -> "Software Updates"
+                                                    "language" -> "App Language"
+                                                    "font", "theme" -> "App Font Size & Style"
+                                                    "firebase_dashboard" -> "Firebase Unified Operations"
+                                                    "backup", "sync_backup" -> "Local Data Backups & Restore"
+                                                    "audit" -> "System Audit Logs"
+                                                    "system_update", "system_updates" -> "System Auto-Update Settings"
+                                                    "reset", "troubleshooting" -> "System Reset & Maintenance"
                                                     else -> "Settings"
                                                 }
                                             }
                                             is Screen.History -> "Activity History"
+                                            is Screen.CustomerAuditLog -> "Customer Audit Log"
                                             is Screen.FullLedgerHistory -> "Daily Ledger History"
                                             is Screen.BulkEntry -> "Bulk Entry"
                                             is Screen.Search -> "Search Customers"
@@ -697,12 +702,10 @@ fun WeeklyFinanceApp(
                                 }
                             },
                             navigationIcon = {
-                                if (canGoBack || (currentScreen is Screen.Settings && settingsSubPage != null)) {
+                                if (currentScreen !is Screen.Dashboard && (canGoBack || (currentScreen is Screen.Settings && settingsSubPage != null))) {
                                     IconButton(onClick = {
                                         if (currentScreen is Screen.Settings && settingsSubPage != null) {
                                             viewModel.setSettingsSubPage(null)
-                                        } else if (currentScreen == Screen.Dashboard && activeDay != "Home") {
-                                            viewModel.selectDay("Home")
                                         } else {
                                             viewModel.navigateBack()
                                         }
@@ -957,6 +960,7 @@ fun WeeklyFinanceApp(
                                     is Screen.EditLoan -> 14
                                     is Screen.RecordPayment -> 15
                                     is Screen.FullLedgerHistory -> 16
+                                    is Screen.CustomerAuditLog -> 17
                                     is Screen.BulkEntry -> 20
                                     is Screen.Search -> 21
                                     is Screen.CalculationDetail -> 22
@@ -973,6 +977,7 @@ fun WeeklyFinanceApp(
                                     is Screen.EditLoan -> 14
                                     is Screen.RecordPayment -> 15
                                     is Screen.FullLedgerHistory -> 16
+                                    is Screen.CustomerAuditLog -> 17
                                     is Screen.BulkEntry -> 20
                                     is Screen.Search -> 21
                                     is Screen.CalculationDetail -> 22
@@ -1025,6 +1030,12 @@ fun WeeklyFinanceApp(
                                 }
                                 is Screen.History -> {
                                     HistoryScreen(viewModel = viewModel)
+                                }
+                                is Screen.CustomerAuditLog -> {
+                                    HistoryScreen(
+                                        viewModel = viewModel,
+                                        filterCustomerId = target.customerId
+                                    )
                                 }
                                 is Screen.FullLedgerHistory -> {
                                     FullLedgerHistoryScreen(viewModel = viewModel)

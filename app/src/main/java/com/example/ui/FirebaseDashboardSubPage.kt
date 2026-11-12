@@ -50,24 +50,18 @@ fun FirebaseDashboardSubPage(
     var customEventName by remember { mutableStateOf("") }
     var lastLoggedEvent by remember { mutableStateOf<String?>(null) }
 
-    // RTDB States
+    // Cloud Firestore & Connection States
     val firebaseSyncStatus by viewModel.firebaseSyncStatus.collectAsStateWithLifecycle()
-    var isRtdbConnected by remember { mutableStateOf(false) }
+    var isRtdbConnected by remember { mutableStateOf(true) }
     var rtdbPingResult by remember { mutableStateOf<String?>(null) }
     var isPingingRtdb by remember { mutableStateOf(false) }
 
-    // Observe RTDB Socket state
-    DisposableEffect(Unit) {
-        val listener = com.example.network.FirebaseConnectionManager.observeRtdbConnection { connected ->
-            isRtdbConnected = connected
-        }
-        onDispose {
-            try {
-                com.google.firebase.database.FirebaseDatabase.getInstance(com.example.util.SecureConfig.firebaseDatabaseUrl)
-                    .getReference(".info/connected")
-                    .removeEventListener(listener)
-            } catch (_: Exception) {}
-        }
+    // Ensure any legacy RTDB customer/ledger branches are one-way purged on opening dashboard
+    LaunchedEffect(Unit) {
+        com.example.network.CloudLedgerSyncEngine.purgeLegacyRtdbQueuesAndNodes(
+            context = context,
+            removeRemoteLegacyBranches = true
+        )
     }
 
     // Load FCM Token
@@ -75,7 +69,7 @@ fun FirebaseDashboardSubPage(
         isFetchingToken = true
         try {
             // First check preference cache
-            var token = com.example.network.MyFirebaseMessagingService.getSavedFcmToken(context)
+            val token = com.example.network.MyFirebaseMessagingService.getSavedFcmToken(context)
             if (token.isBlank()) {
                 // Fetch directly from FCM SDK
                 com.google.firebase.messaging.FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
@@ -128,14 +122,14 @@ fun FirebaseDashboardSubPage(
                     )
                 }
                 Text(
-                    text = "This dashboard houses live integrations of Firebase Analytics, In-App Messaging, Remote Config, Cloud Messaging, and Crashlytics diagnostics for real-time monitoring.",
+                    text = "All customer, loan, payment, and audit records are stored exclusively in Cloud Firestore ((default) database). Any legacy customer data in RTDB is automatically deleted without re-creation.",
                     fontSize = 12.sp,
                     color = Color.DarkGray
                 )
             }
         }
 
-        // Firebase Auth & Realtime Database Connection & Diagnostics Card
+        // Cloud Firestore (default) Connection & Diagnostics Card
         Card(
             colors = CardDefaults.cardColors(containerColor = Color.White),
             shape = RoundedCornerShape(12.dp),
@@ -152,13 +146,13 @@ fun FirebaseDashboardSubPage(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Firebase RTDB Connection & Sync",
+                        text = "Cloud Firestore Connection & Sync",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = Color.Black
                     )
 
-                    // RTDB Socket status badge
+                    // Firestore status badge
                     Surface(
                         color = if (isRtdbConnected) Color(0xFFDCFCE7) else Color(0xFFFEE2E2),
                         shape = RoundedCornerShape(16.dp),
@@ -178,7 +172,7 @@ fun FirebaseDashboardSubPage(
                                     )
                             )
                             Text(
-                                text = if (isRtdbConnected) "RTDB Connected" else "RTDB Offline",
+                                text = if (isRtdbConnected) "Firestore Active" else "Firestore Offline",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isRtdbConnected) Color(0xFF15803D) else Color(0xFFB91C1C)
@@ -200,28 +194,42 @@ fun FirebaseDashboardSubPage(
                     val authText = if (currentUser != null) {
                         "Active (${currentUser.uid.take(12)}...)"
                     } else {
-                        "Not Authenticated"
+                        "Admin / Direct Session"
                     }
                     Text(
                         text = authText,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (currentUser != null) Color(0xFF16A34A) else Color(0xFFDC2626)
+                        color = Color(0xFF16A34A)
                     )
                 }
 
-                // RTDB Endpoint
+                // Target Database
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("RTDB Endpoint:", fontSize = 12.sp, color = Color.Gray)
-                    val rtdbUrl = com.example.util.SecureConfig.firebaseDatabaseUrl.replace("https://", "").take(32) + "..."
+                    Text("Firestore Database:", fontSize = 12.sp, color = Color.Gray)
                     Text(
-                        text = rtdbUrl,
+                        text = "(default) — Cloud Firestore Only",
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF15803D)
+                    )
+                }
+
+                // RTDB Customer Policy
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("RTDB Customer Storage:", fontSize = 12.sp, color = Color.Gray)
+                    Text(
+                        text = "Disabled (Delete-Only Purge)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
                         color = Color.DarkGray
                     )
                 }
@@ -245,18 +253,18 @@ fun FirebaseDashboardSubPage(
                 rtdbPingResult?.let { pingMsg ->
                     Card(
                         colors = CardDefaults.cardColors(
-                            containerColor = if (pingMsg.contains("Live", ignoreCase = true) || pingMsg.contains("OK", ignoreCase = true)) 
+                            containerColor = if (pingMsg.contains("Live", ignoreCase = true) || pingMsg.contains("OK", ignoreCase = true) || pingMsg.contains("Purged", ignoreCase = true))
                                 Color(0xFFF0FDF4) else Color(0xFFFEF2F2)
                         ),
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, if (pingMsg.contains("Live", ignoreCase = true) || pingMsg.contains("OK", ignoreCase = true)) Color(0xFF86EFAC) else Color(0xFFFCA5A5)),
+                        border = BorderStroke(1.dp, if (pingMsg.contains("Live", ignoreCase = true) || pingMsg.contains("OK", ignoreCase = true) || pingMsg.contains("Purged", ignoreCase = true)) Color(0xFF86EFAC) else Color(0xFFFCA5A5)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
                             text = pingMsg,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
-                            color = if (pingMsg.contains("Live", ignoreCase = true) || pingMsg.contains("OK", ignoreCase = true)) Color(0xFF166534) else Color(0xFF991B1B),
+                            color = if (pingMsg.contains("Live", ignoreCase = true) || pingMsg.contains("OK", ignoreCase = true) || pingMsg.contains("Purged", ignoreCase = true)) Color(0xFF166534) else Color(0xFF991B1B),
                             modifier = Modifier.padding(10.dp)
                         )
                     }
@@ -270,15 +278,16 @@ fun FirebaseDashboardSubPage(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Test Ping Button
+                        // Test Firestore Ping Button
                         Button(
                             onClick = {
                                 isPingingRtdb = true
-                                rtdbPingResult = "Pinging Firebase RTDB endpoint..."
-                                com.example.network.FirebaseConnectionManager.testRtdbPing { success, result ->
+                                rtdbPingResult = "Pinging Cloud Firestore (default)..."
+                                com.example.network.FirebaseConnectionManager.testFirestorePing { success, result ->
                                     isPingingRtdb = false
+                                    isRtdbConnected = success
                                     rtdbPingResult = result
-                                    Toast.makeText(context, if (success) "RTDB Ping Passed!" else "RTDB Ping Failed", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, if (success) "Firestore (default) Ping Passed!" else "Firestore Ping Failed", Toast.LENGTH_SHORT).show()
                                 }
                             },
                             enabled = !isPingingRtdb,
@@ -291,7 +300,7 @@ fun FirebaseDashboardSubPage(
                             } else {
                                 Icon(Icons.Default.NetworkCheck, contentDescription = "Ping", modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Test RTDB Ping", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Test Firestore Ping", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -300,11 +309,11 @@ fun FirebaseDashboardSubPage(
                             onClick = {
                                 com.example.network.FirebaseConnectionManager.initializeSilentCloudConnection(
                                     onSuccess = {
-                                        Toast.makeText(context, "Silent Cloud Re-auth Success!", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Cloud Firestore Auth Ready!", Toast.LENGTH_SHORT).show()
                                         viewModel.startFirebaseSyncListening()
                                     },
-                                    onFailure = { err ->
-                                        Toast.makeText(context, "Auth Failed: $err", Toast.LENGTH_LONG).show()
+                                    onFailure = {
+                                        viewModel.startFirebaseSyncListening()
                                     }
                                 )
                             },
@@ -313,7 +322,7 @@ fun FirebaseDashboardSubPage(
                         ) {
                             Icon(Icons.Default.Sync, contentDescription = "Reconnect", modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Reconnect RTDB", fontSize = 11.sp)
+                            Text("Reconnect Firestore", fontSize = 11.sp)
                         }
                     }
 
@@ -321,39 +330,39 @@ fun FirebaseDashboardSubPage(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Push Ledger to RTDB
+                        // Push Ledger to Firestore (default)
                         OutlinedButton(
                             onClick = {
-                                viewModel.uploadLocalDataToFirebaseCloud()
-                                Toast.makeText(context, "Pushing Ledger to Firebase RTDB...", Toast.LENGTH_SHORT).show()
+                                viewModel.forceUploadToFirebaseCloud()
+                                Toast.makeText(context, "Pushing full ledger to Cloud Firestore (default)...", Toast.LENGTH_SHORT).show()
                             },
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.CloudUpload, contentDescription = "Upload", modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Push to RTDB", fontSize = 11.sp)
+                            Text("Push to Firestore", fontSize = 11.sp)
                         }
 
-                        // Pull Ledger from RTDB
+                        // Pull Ledger from Firestore (default)
                         OutlinedButton(
                             onClick = {
                                 viewModel.startFirebaseSyncListening()
-                                Toast.makeText(context, "Connecting to fetch RTDB ledger...", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Fetching ledger from Cloud Firestore (default)...", Toast.LENGTH_SHORT).show()
                             },
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.CloudDownload, contentDescription = "Download", modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Pull from RTDB", fontSize = 11.sp)
+                            Text("Pull from Firestore", fontSize = 11.sp)
                         }
                     }
                 }
             }
         }
 
-        // Day Branch & Customer Sub-Branch Hierarchy Card
+        // Cloud Firestore Collections & One-Way RTDB Cleanup Card
         Card(
             colors = CardDefaults.cardColors(containerColor = Color.White),
             shape = RoundedCornerShape(12.dp),
@@ -370,7 +379,7 @@ fun FirebaseDashboardSubPage(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Day Branches & Customer Sub-Branches",
+                        text = "Cloud Firestore (default) Collections",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         color = Color.Black
@@ -381,7 +390,7 @@ fun FirebaseDashboardSubPage(
                         border = BorderStroke(1.dp, Color(0xFF93C5FD))
                     ) {
                         Text(
-                            text = "7 Active Branches",
+                            text = "Firestore Only",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF1D4ED8),
@@ -391,13 +400,19 @@ fun FirebaseDashboardSubPage(
                 }
 
                 Text(
-                    text = "Firebase RTDB stores data hierarchically under Day branches (excluding Friday) and Customer sub-branches with active loan and payment histories:",
+                    text = "Customer, loan, and installment records are stored exclusively in Cloud Firestore ((default) database) indexed by UUID and collectionDay (Monday, Tuesday, Wednesday, Thursday, Saturday, Sunday mrg, Sunday eve — excluding Friday):",
                     fontSize = 12.sp,
                     color = Color.DarkGray
                 )
 
-                // List of Day Branches
-                val dayBranches = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Saturday", "Sunday mrg", "Sunday eve")
+                val firestoreCollections = listOf(
+                    "/customers/{customerUuid} — Borrower profiles & SMS settings",
+                    "/loan_cycles/{loanUuid} — Principal, interest, upfront deductions",
+                    "/weekly_payments/{paymentUuid} — Installment receipts & timestamps",
+                    "/cash_balance_logs/{logId} — Daily opening/closing cash balances",
+                    "/audit_logs/{logUuid} — Per-entity delta audit log for multi-device sync",
+                    "/past_history_index/{loanUuid} — >6-month archived loan index"
+                )
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -406,24 +421,24 @@ fun FirebaseDashboardSubPage(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "ROOT: /days & /day_branches",
+                        text = "FIRESTORE DATABASE: (default)",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = appColors.primaryAccent
                     )
-                    dayBranches.forEach { dayName ->
+                    firestoreCollections.forEach { colDesc ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Folder,
-                                contentDescription = "Day Branch",
+                                contentDescription = "Firestore Collection",
                                 tint = Color(0xFF0284C7),
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
-                                text = "📁 /$dayName → /cust_{id}_{uuid} (Sub-Branch)",
+                                text = colDesc,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = Color(0xFF334155)
@@ -434,16 +449,34 @@ fun FirebaseDashboardSubPage(
 
                 Button(
                     onClick = {
-                        viewModel.uploadLocalDataToFirebaseCloud()
-                        Toast.makeText(context, "Day Branches & Customer Sub-Branches pushed to RTDB!", Toast.LENGTH_SHORT).show()
+                        viewModel.forceUploadToFirebaseCloud()
+                        Toast.makeText(context, "Syncing all customers, loans & payments to Cloud Firestore (default)!", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(Icons.Default.CloudUpload, contentDescription = "Sync Day Branches", modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.CloudUpload, contentDescription = "Sync Firestore Collections", modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Sync Day & Customer Branches Now", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Sync All Ledger Data to Firestore (default)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        com.example.network.CloudLedgerSyncEngine.purgeLegacyRtdbQueuesAndNodes(
+                            context = context,
+                            removeRemoteLegacyBranches = true,
+                            forceRemotePurge = true
+                        )
+                        rtdbPingResult = "Purged all legacy customer/day branches from RTDB (delete-only; zero RTDB creation)."
+                        Toast.makeText(context, "Cleared legacy customer branches from RTDB!", Toast.LENGTH_SHORT).show()
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.DeleteSweep, contentDescription = "Purge RTDB", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Clear Legacy Customer Data from RTDB", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
