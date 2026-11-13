@@ -356,7 +356,6 @@ fun CustomerDetailScreen(
     
     val customerList: List<Customer> by viewModel.allCustomers.collectAsStateWithLifecycle()
     val loanCycles: List<LoanCycle> by viewModel.getLoanCyclesForCustomer(customerId).collectAsStateWithLifecycle(initialValue = emptyList())
-    val upiLinkVal by viewModel.upiLink.collectAsStateWithLifecycle()
     val language by viewModel.language.collectAsStateWithLifecycle()
     val currentUserRole by viewModel.currentUserRole.collectAsStateWithLifecycle()
     val allPayments by viewModel.allPayments.collectAsStateWithLifecycle()
@@ -377,7 +376,6 @@ fun CustomerDetailScreen(
     // Direct Interaction Heads-up state variables
     var showCallAlert by remember { mutableStateOf(false) }
     var showSmsAlert by remember { mutableStateOf(false) }
-    var showUpiAlert by remember { mutableStateOf(false) }
     var showWhatsappAlert by remember { mutableStateOf(false) }
 
     val phoneParts = remember(customer.phone, customer.phone2) {
@@ -398,7 +396,6 @@ fun CustomerDetailScreen(
     var selectedSmsPhone by remember(customer.id, primaryPhone, secondaryPhone) { mutableStateOf(primaryPhone) }
     var selectedWhatsappPhone by remember(customer.id, primaryPhone, secondaryPhone) { mutableStateOf(primaryPhone) }
     var selectedStatementPhone by remember(customer.id, primaryPhone, secondaryPhone) { mutableStateOf(primaryPhone) }
-    var selectedUpiPhone by remember(customer.id, primaryPhone, secondaryPhone) { mutableStateOf(primaryPhone) }
 
     // Heads-up Dialogs
     if (showCallAlert) {
@@ -617,171 +614,6 @@ fun CustomerDetailScreen(
             dismissButton = {
                 TextButton(onClick = { showWhatsappAlert = false }) {
                     Text("Cancel")
-                }
-            }
-        )
-    }
-
-    if (showUpiAlert) {
-        val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
-        val activeUpiPhone = if (hasTwoPhones) selectedUpiPhone else primaryPhone
-        val rawPhone = activeUpiPhone.replace("[^0-9]".toRegex(), "")
-        val cleanPhone = if (rawPhone.length >= 10) rawPhone.takeLast(10) else rawPhone
-        val defaultUpi = if (customer.upiNameAlias.contains("@")) {
-            customer.upiNameAlias.trim()
-        } else if (cleanPhone.isNotEmpty()) {
-            "${cleanPhone}@ybl"
-        } else {
-            ""
-        }
-        var upiIdToPay by remember(customer, cleanPhone) { mutableStateOf(defaultUpi) }
-
-        val upiTitle = translate("UPI Payment", language)
-        val upiText = when (language) {
-            "Tamil" -> "${customer.name}-க்கு பணம் செலுத்த UPI செயலியைத் திறக்கலாமா? முன்னிருப்பாக வாடிக்கையாளரின் தொலைபேசி எண் UPI முகவரியாக (${cleanPhone}@ybl) பயன்படுத்தப்படும். திறந்ததும், நீங்கள் தொகையை உள்ளிட்டு பணம் செலுத்தலாம்."
-            "Hindi" -> "क्या आप ${customer.name} को भुगतान करने के लिए UPI ऐप खोलना चाहते हैं? डिफ़ॉल्ट रूप से, ग्राहक का मोबाइल नंबर UPI पता (${cleanPhone}@ybl) के रूप में उपयोग किया जाएगा। एक बार UPI ऐप खुलने के बाद, आप भुगतान करने के लिए राशि दर्ज कर सकते हैं।"
-            "Telugu" -> "${customer.name} కి చెల్లించడానికి UPI యాప్‌ని తెరవాలా? డిఫాల్ట్‌గా, కస్టమర్ మొబైల్ నంబర్ UPI చిరునామా (${cleanPhone}@ybl)గా ఉపయోగించబడుతుంది. UPI యాప్ తెరిచిన తర్వాత, మీరు చెల్లించాల్సిన మొత్తాన్ని టైప్ చేయవచ్చు."
-            else -> "Open your UPI app to pay ${customer.name}? By default, it will use the customer's mobile number UPI address (${cleanPhone}@ybl). Once the UPI app opens, you can type the amount to pay."
-        }
-        val upiConfirm = translate("Open UPI App", language)
-        val upiCancel = translate("Cancel", language)
-
-        AlertDialog(
-            onDismissRequest = { showUpiAlert = false },
-            containerColor = Color.White,
-            titleContentColor = Color.Black,
-            textContentColor = Color.Black,
-            title = { Text(upiTitle, fontWeight = FontWeight.Bold, color = Color.Black) },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    if (hasTwoPhones) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Select mobile number for UPI:", color = Color.Black, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { selectedUpiPhone = primaryPhone }
-                                    .padding(vertical = 2.dp)
-                            ) {
-                                RadioButton(
-                                    selected = (selectedUpiPhone == primaryPhone),
-                                    onClick = { selectedUpiPhone = primaryPhone },
-                                    colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF0284C7))
-                                )
-                                Text("Primary: $primaryPhone", color = Color.Black, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
-                            }
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { selectedUpiPhone = secondaryPhone }
-                                    .padding(vertical = 2.dp)
-                            ) {
-                                RadioButton(
-                                    selected = (selectedUpiPhone == secondaryPhone),
-                                    onClick = { selectedUpiPhone = secondaryPhone },
-                                    colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF0284C7))
-                                )
-                                Text("Secondary: $secondaryPhone", color = Color.Black, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
-                            }
-                        }
-                    }
-                    Text(upiText, color = Color.Black, fontSize = 14.sp)
-                    
-                    OutlinedTextField(
-                        value = upiIdToPay,
-                        onValueChange = { upiIdToPay = it },
-                        label = { Text(translate("Customer UPI ID (VPA)", language)) },
-                        singleLine = true,
-                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp, color = Color.Black),
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.Black,
-                            unfocusedTextColor = Color.Black,
-                            focusedBorderColor = Color(0xFF0284C7),
-                            unfocusedBorderColor = Color.Gray,
-                            focusedLabelColor = Color(0xFF0284C7),
-                            unfocusedLabelColor = Color.Gray
-                        )
-                    )
-                    
-                    if (cleanPhone.isNotEmpty()) {
-                        Text(
-                            text = translate("Quick Suffix:", language),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.Gray
-                        )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            val suffixes = listOf("@ybl", "@upi", "@ptyes", "@okaxis")
-                            suffixes.forEach { suffix ->
-                                val targetVpa = "${cleanPhone}$suffix"
-                                val isSelected = upiIdToPay == targetVpa
-                                Box(
-                                    modifier = Modifier
-                                        .background(
-                                            color = if (isSelected) Color(0xFF0284C7) else Color(0xFFF1F5F9),
-                                            shape = RoundedCornerShape(16.dp)
-                                        )
-                                        .clickable { upiIdToPay = targetVpa }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                                ) {
-                                    Text(
-                                        text = suffix,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = if (isSelected) Color.White else Color.Black
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showUpiAlert = false
-                        val cleanUpi = upiIdToPay.trim()
-                        if (cleanUpi.isBlank()) {
-                            Toast.makeText(context, "UPI ID cannot be empty", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        try {
-                            // Copy to Clipboard as automatic fallback so they can paste it if any app is restrictive
-                            clipboardManager.setText(androidx.compose.ui.text.buildAnnotatedString { append(cleanUpi) })
-                            Toast.makeText(context, "UPI ID copied: $cleanUpi", Toast.LENGTH_LONG).show()
-
-                            // Build simplified P2P UPI link to avoid "payment not allowed" merchant restrictions
-                            val intentUri = Uri.Builder()
-                                .scheme("upi")
-                                .authority("pay")
-                                .appendQueryParameter("pa", cleanUpi)
-                                .build()
-                            
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                data = intentUri
-                            }
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "Launch UPI Failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                ) {
-                    Text(upiConfirm)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showUpiAlert = false }) {
-                    Text(upiCancel, color = Color.Black)
                 }
             }
         )
@@ -1171,7 +1003,8 @@ fun CustomerDetailScreen(
                     themeName = viewModel.selectedTheme.value,
                     customizationCode = viewModel.statementCustomizationCode.value,
                     customerPhone = targetPhone,
-                    isClosedLoan = isClosed
+                    isClosedLoan = isClosed,
+                    tableColumnsCsv = viewModel.statementTableColumns.value
                 )
                 generatedStatementModalData = Triple(statementBitmap, targetLoan, targetPhone)
             } catch (e: Exception) {
@@ -2124,23 +1957,6 @@ fun CustomerDetailScreen(
                             modifier = Modifier.testTag("whatsapp_remind_button")
                         ) {
                             Icon(WhatsAppIcon, contentDescription = "WhatsApp Remind", tint = Color.Unspecified, modifier = Modifier.size(24.dp))
-                        }
-
-                        // 4. UPI Pay Logo
-                        IconButton(onClick = { showUpiAlert = true }) {
-                            Box(
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .background(Color(0xFF0284C7), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "UPI",
-                                    color = Color.White,
-                                    fontSize = 8.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
-                            }
                         }
                     }
 

@@ -138,5 +138,43 @@ class ExampleUnitTest {
         val parsedFromJson = com.example.network.CloudLedgerSyncEngine.parseFavoriteUuids("[\"cust-uuid-1\",\"cust-uuid-2\"]")
         assertEquals(setOf("cust-uuid-1", "cust-uuid-2"), parsedFromJson)
     }
+
+    @Test
+    fun statementGenerator_tableColumnsAddRemoveReorderAndFormatCorrectly() {
+        // Custom reordered columns with REMARKS added and TIME removed
+        val customColumns = StatementGenerator.parseStatementTableColumns("DATE,WEEK_NO,AMOUNT,MODE,REMARKS")
+        assertEquals(listOf("DATE", "WEEK_NO", "AMOUNT", "MODE", "REMARKS"), customColumns)
+
+        // Blank or invalid falls back to default 5 columns
+        val defaultColumns = StatementGenerator.parseStatementTableColumns(" , INVALID_COL ")
+        assertEquals(listOf("WEEK_NO", "DATE", "MODE", "TIME", "AMOUNT"), defaultColumns)
+
+        val fixedTimestamp = 1775966400000L
+        val samplePayment = WeeklyPayment(
+            id = 10,
+            loanCycleId = 1,
+            weekNumber = 4,
+            amountPaid = 1250.0,
+            paymentDate = fixedTimestamp,
+            notes = "UPI",
+            upiTxnId = "TXN9988"
+        )
+        assertEquals("Week 4", StatementGenerator.formatPaymentCellForColumn("WEEK_NO", samplePayment))
+        assertTrue(StatementGenerator.formatPaymentCellForColumn("DATE", samplePayment).isNotBlank())
+        assertTrue(StatementGenerator.formatPaymentCellForColumn("TIME", samplePayment).isNotBlank())
+        assertEquals("UPI", StatementGenerator.formatPaymentCellForColumn("MODE", samplePayment))
+        assertEquals("₹1,250", StatementGenerator.formatPaymentCellForColumn("AMOUNT", samplePayment))
+        assertEquals("TXN9988", StatementGenerator.formatPaymentCellForColumn("REMARKS", samplePayment))
+    }
+
+    @Test
+    fun upiQrCodeHelper_generatesQrBitmapFromScannedPayload() {
+        val rawQr = "upi://pay?pa=9440736893@ptyes&pn=MD%20Finance&cu=INR"
+        val bitmap = UpiQrCodeHelper.generateQrBitmapFromPayload(rawQr, 256)
+        assertNotNull(bitmap)
+        assertEquals(256, bitmap!!.width)
+        assertEquals(256, bitmap.height)
+    }
 }
+
 

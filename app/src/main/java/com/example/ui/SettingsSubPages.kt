@@ -764,7 +764,17 @@ fun BusinessUpiSubPage(
     qrImageUri: String,
     qrPickerLauncher: ActivityResultLauncher<String>
 ) {
-    val statementCustomizationCode by viewModel.statementCustomizationCode.collectAsStateWithLifecycle()
+    var showQrCameraScanner by remember { mutableStateOf(false) }
+
+    if (showQrCameraScanner) {
+        QrCameraScannerDialog(
+            onDismiss = { showQrCameraScanner = false },
+            onQrCodeScanned = { rawPayload ->
+                showQrCameraScanner = false
+                viewModel.saveScannedQrCodePayload(rawPayload)
+            }
+        )
+    }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -784,7 +794,7 @@ fun BusinessUpiSubPage(
                 value = businessName,
                 onValueChange = { viewModel.setBusinessName(it) },
                 label = { Text("Business Name Signal Title (SMS footer)", fontSize = 11.sp) },
-                placeholder = { Text("Example: Muneeswaran Finance", fontSize = 11.sp) },
+                placeholder = { Text("Example: MD Finance", fontSize = 11.sp) },
                 singleLine = true,
                 textStyle = LocalTextStyle.current.copy(fontSize = 16.sp, color = Color.Black),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -803,7 +813,7 @@ fun BusinessUpiSubPage(
             OutlinedTextField(
                 value = upiId,
                 onValueChange = { viewModel.setUpiId(it) },
-                label = { Text("Merchant UPI ID (for QR codes and SMS formats)", fontSize = 11.sp) },
+                label = { Text("Merchant UPI ID (Auto-filled when you scan QR code)", fontSize = 11.sp) },
                 placeholder = { Text("Example: 9440736893@ptyes", fontSize = 11.sp) },
                 singleLine = true,
                 textStyle = LocalTextStyle.current.copy(fontSize = 16.sp, color = Color.Black),
@@ -819,29 +829,9 @@ fun BusinessUpiSubPage(
                 shape = RoundedCornerShape(8.dp)
             )
 
-            // Merchant UPI Payment Link
-            OutlinedTextField(
-                value = upiLink,
-                onValueChange = { viewModel.setUpiLink(it) },
-                label = { Text("Merchant UPI Deep Link (Auto-filled from QR upload)", fontSize = 11.sp) },
-                placeholder = { Text("Example: upi://pay?pa=9440736893@ptyes&pn=MD%20Finance", fontSize = 11.sp) },
-                singleLine = true,
-                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp, color = Color.Black),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.Black,
-                    unfocusedTextColor = Color.Black,
-                    focusedLabelColor = Color.Black,
-                    unfocusedLabelColor = Color.Black,
-                    focusedBorderColor = ColorSlateDark,
-                    unfocusedBorderColor = Color(0xFFCBD5E1)
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp)
-            )
-
             HorizontalDivider(color = Color(0xFFE2E8F0))
 
-            // UPI QR Code Upload & Reader Section
+            // UPI QR Code Live Camera Scanner Section
             val context = LocalContext.current
             val savedQrBitmap = remember(qrImageUri) {
                 UpiQrCodeHelper.loadSavedQrBitmap(context)
@@ -854,28 +844,28 @@ fun BusinessUpiSubPage(
             ) {
                 Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                     Text(
-                        text = translate("UPI QR Code for Account Statements", language),
+                        text = translate("Scan UPI QR Code for Statements", language),
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
                         color = ColorSlateDark
                     )
                     Text(
-                        text = translate("Upload your GPay / PhonePe / Paytm QR image. We automatically decode the UPI ID & payment link and print the QR in the top-right corner of every customer statement with 'Scan and Pay' below it.", language),
+                        text = translate("Open camera and scan your GPay / PhonePe / Paytm QR code. We extract the QR data, auto-fill your UPI ID, and paste the clean QR code directly onto customer statements.", language),
                         fontSize = 11.sp,
                         color = Color.DarkGray,
                         modifier = Modifier.padding(top = 2.dp)
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(
-                        onClick = { qrPickerLauncher.launch("image/*") },
+                        onClick = { showQrCameraScanner = true },
                         colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent),
                         shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.testTag("upload_upi_qr_button")
+                        modifier = Modifier.testTag("scan_upi_qr_button")
                     ) {
                         Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (savedQrBitmap != null) translate("Change UPI QR Code", language) else translate("Upload UPI QR Code", language),
+                            text = if (savedQrBitmap != null) translate("Rescan UPI QR Code", language) else translate("Scan UPI QR Code", language),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
@@ -883,43 +873,20 @@ fun BusinessUpiSubPage(
                     }
                 }
 
-                // Live Preview of Top-Right Statement "Scan and Pay" QR Box
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
-                        .border(1.dp, Color(0xFF334155), RoundedCornerShape(12.dp))
-                        .padding(10.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(78.dp)
-                            .background(Color.White, RoundedCornerShape(8.dp))
-                            .padding(4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (savedQrBitmap != null) {
-                            Image(
-                                bitmap = savedQrBitmap.asImageBitmap(),
-                                contentDescription = "Saved UPI QR Code",
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.QrCode2,
-                                contentDescription = "QR Placeholder",
-                                tint = Color(0xFF0F172A),
-                                modifier = Modifier.size(52.dp)
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Scan and Pay",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White
+                // Direct QR Code Preview (No background box or wrapper)
+                if (savedQrBitmap != null) {
+                    Image(
+                        bitmap = savedQrBitmap.asImageBitmap(),
+                        contentDescription = "Scanned UPI QR Code",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(84.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.QrCode2,
+                        contentDescription = "QR Placeholder",
+                        tint = Color(0xFF0F172A),
+                        modifier = Modifier.size(72.dp)
                     )
                 }
             }
@@ -2043,13 +2010,13 @@ val MESSAGE_BUBBLE_TAGS = listOf(
     MessageBubbleTag(token = "{date}", displayLabel = "Date"),
     MessageBubbleTag(token = "{business}", displayLabel = "Business Name"),
     MessageBubbleTag(token = "{upi}", displayLabel = "UPI ID"),
-    MessageBubbleTag(token = "{phone}", displayLabel = "Phone Number", altTokens = listOf("{phone_number}", "{upi_link}"))
+    MessageBubbleTag(token = "{phone}", displayLabel = "Phone Number", altTokens = listOf("{phone_number}"))
 )
 
 val STATEMENT_BUBBLE_TAGS = listOf(
     MessageBubbleTag(token = "{business}", displayLabel = "Business Name"),
     MessageBubbleTag(token = "{customer}", displayLabel = "Customer Name", altTokens = listOf("{name}")),
-    MessageBubbleTag(token = "{phone}", displayLabel = "Phone Number", altTokens = listOf("{phone_number}", "{upi_link}")),
+    MessageBubbleTag(token = "{phone}", displayLabel = "Phone Number", altTokens = listOf("{phone_number}")),
     MessageBubbleTag(token = "{day}", displayLabel = "Collection Day"),
     MessageBubbleTag(token = "{city}", displayLabel = "City"),
     MessageBubbleTag(token = "{route}", displayLabel = "Route No"),
@@ -3413,6 +3380,10 @@ fun StatementTemplateSubPage(
     val customerBoxTemplate by viewModel.statementCustomerBoxTemplate.collectAsStateWithLifecycle()
     val loanBoxTemplate by viewModel.statementLoanBoxTemplate.collectAsStateWithLifecycle()
     val footerTemplate by viewModel.statementFooterTemplate.collectAsStateWithLifecycle()
+    val tableColumnsCsv by viewModel.statementTableColumns.collectAsStateWithLifecycle()
+    val activeTableColumns = remember(tableColumnsCsv) {
+        com.example.util.StatementGenerator.parseStatementTableColumns(tableColumnsCsv)
+    }
 
     val daysList = remember(collectionGroups) {
         getOrderedDaysList(collectionGroups).filter {
@@ -3506,7 +3477,8 @@ fun StatementTemplateSubPage(
         "2. Header Sub-Heading",
         "3. Customer Details Box",
         "4. Loan Summary Placeholders",
-        "5. Bottom Footer Format"
+        "5. Transaction Box (Add, Remove & Reorder Columns)",
+        "6. Bottom Footer Format"
     )
     val currentSectionValue = when (activeSectionIndex) {
         0 -> headerTitleTemplate
@@ -3521,7 +3493,7 @@ fun StatementTemplateSubPage(
             1 -> viewModel.setStatementHeaderSubtitle(updated)
             2 -> viewModel.setStatementCustomerBoxTemplate(updated)
             3 -> viewModel.setStatementLoanBoxTemplate(updated)
-            else -> viewModel.setStatementFooterTemplate(updated)
+            5 -> viewModel.setStatementFooterTemplate(updated)
         }
     }
 
@@ -3766,40 +3738,24 @@ fun StatementTemplateSubPage(
                             )
                         }
 
-                        // Top-Right Corner: Saved QR Code + "Scan and Pay"
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.align(Alignment.CenterEnd)
-                        ) {
-                            Box(
+                        // Top-Right Corner: Pasted QR Code directly (no background card or label)
+                        if (previewQrBitmap != null) {
+                            Image(
+                                bitmap = previewQrBitmap.asImageBitmap(),
+                                contentDescription = "Statement QR Preview",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .align(Alignment.CenterEnd)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.QrCode2,
+                                contentDescription = "QR Preview",
+                                tint = Color.White,
                                 modifier = Modifier
                                     .size(48.dp)
-                                    .background(Color.White, RoundedCornerShape(6.dp))
-                                    .padding(3.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (previewQrBitmap != null) {
-                                    Image(
-                                        bitmap = previewQrBitmap.asImageBitmap(),
-                                        contentDescription = "Statement QR Preview",
-                                        contentScale = ContentScale.Fit,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.Default.QrCode2,
-                                        contentDescription = "Scan and Pay QR",
-                                        tint = Color(0xFF0F172A),
-                                        modifier = Modifier.size(36.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Scan and Pay",
-                                fontSize = 7.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color.White
+                                    .align(Alignment.CenterEnd)
                             )
                         }
                     }
@@ -3884,69 +3840,123 @@ fun StatementTemplateSubPage(
                         }
                     }
 
-                    // 3. Mini Transaction Table Preview
+                    // 3. Interactive Transaction Table Preview (Section 4 — Tap to Edit & Reorder Columns)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 10.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .border(1.dp, Color(0xFFCBD5E1), RoundedCornerShape(8.dp))
+                            .border(
+                                width = if (activeSectionIndex == 4) 2.dp else 1.dp,
+                                color = if (activeSectionIndex == 4) Color(0xFF4F46E5) else Color(0xFFCBD5E1),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .clickable { activeSectionIndex = 4 }
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(Color(0xFF1E293B))
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("WEEK NO.", color = Color.White, fontSize = 8.5.sp, fontWeight = FontWeight.Bold)
-                            Text("PAYMENT DATE", color = Color.White, fontSize = 8.5.sp, fontWeight = FontWeight.Bold)
-                            Text("AMOUNT PAID", color = Color.White, fontSize = 8.5.sp, fontWeight = FontWeight.Bold)
-                        }
-                        val sampleRows = if (selectedPreviewPayments.isNotEmpty()) {
-                            selectedPreviewPayments.take(2).map {
-                                Triple(
-                                    "Week ${it.weekNumber}",
-                                    SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(it.paymentDate)),
-                                    "₹${com.example.util.CurrencyFormatter.format(it.amountPaid)}"
+                            activeTableColumns.forEachIndexed { colIdx, colKey ->
+                                val align = when {
+                                    colKey == "AMOUNT" || colIdx == activeTableColumns.lastIndex -> TextAlign.End
+                                    colIdx == 0 -> TextAlign.Start
+                                    else -> TextAlign.Center
+                                }
+                                Text(
+                                    text = com.example.util.StatementGenerator.getColumnHeaderLabel(colKey),
+                                    color = Color.White,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = align,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
+                        }
+
+                        val demoPayments = if (selectedPreviewPayments.isNotEmpty()) {
+                            selectedPreviewPayments.take(2)
                         } else {
+                            val now = System.currentTimeMillis()
                             listOf(
-                                Triple("Week 1", SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date()), "₹1,000"),
-                                Triple("Week 2", SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date()), "₹1,000")
+                                com.example.data.WeeklyPayment(
+                                    id = 1,
+                                    loanCycleId = 1,
+                                    amountPaid = 1000.0,
+                                    paymentDate = now - 7L * 24 * 3600 * 1000,
+                                    weekNumber = 1,
+                                    notes = "Cash",
+                                    upiTxnId = null
+                                ),
+                                com.example.data.WeeklyPayment(
+                                    id = 2,
+                                    loanCycleId = 1,
+                                    amountPaid = 1000.0,
+                                    paymentDate = now,
+                                    weekNumber = 2,
+                                    notes = "UPI",
+                                    upiTxnId = "UPI123"
+                                )
                             )
                         }
-                        sampleRows.forEachIndexed { idx, row ->
+
+                        demoPayments.forEachIndexed { rowIdx, payment ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(if (idx % 2 == 0) Color.White else Color(0xFFF1F5F9))
-                                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .background(if (rowIdx % 2 == 0) Color.White else Color(0xFFF1F5F9))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(row.first, fontSize = 9.sp, color = Color(0xFF1E293B))
-                                Text(row.second, fontSize = 9.sp, color = Color(0xFF1E293B))
-                                Text(row.third, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF16A34A))
+                                activeTableColumns.forEachIndexed { colIdx, colKey ->
+                                    val cellText = com.example.util.StatementGenerator.formatPaymentCellForColumn(colKey, payment, rowIdx)
+                                    val align = when {
+                                        colKey == "AMOUNT" || colIdx == activeTableColumns.lastIndex -> TextAlign.End
+                                        colIdx == 0 -> TextAlign.Start
+                                        else -> TextAlign.Center
+                                    }
+                                    val cellColor = when (colKey) {
+                                        "AMOUNT" -> Color(0xFF16A34A)
+                                        "MODE" -> if (cellText == "UPI") Color(0xFF2563EB) else Color(0xFF1E293B)
+                                        else -> Color(0xFF1E293B)
+                                    }
+                                    Text(
+                                        text = cellText,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = if (colKey == "AMOUNT" || colKey == "WEEK_NO") FontWeight.Bold else FontWeight.Medium,
+                                        color = cellColor,
+                                        textAlign = align,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
                             }
                         }
                     }
 
-                    // 4. Bottom Footer Format Preview (Section 4)
+                    // 4. Bottom Footer Format Preview (Section 5)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(10.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(
-                                if (activeSectionIndex == 4) Color(0xFFE0E7FF) else Color.Transparent
+                                if (activeSectionIndex == 5) Color(0xFFE0E7FF) else Color.Transparent
                             )
                             .border(
-                                width = if (activeSectionIndex == 4) 1.5.dp else 1.dp,
-                                color = if (activeSectionIndex == 4) Color(0xFF4F46E5) else Color.Transparent,
+                                width = if (activeSectionIndex == 5) 1.5.dp else 1.dp,
+                                color = if (activeSectionIndex == 5) Color(0xFF4F46E5) else Color.Transparent,
                                 shape = RoundedCornerShape(8.dp)
                             )
-                            .clickable { activeSectionIndex = 4 }
+                            .clickable { activeSectionIndex = 5 }
                             .padding(vertical = 6.dp, horizontal = 8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -3971,7 +3981,7 @@ fun StatementTemplateSubPage(
             }
 
             // =========================================================================
-            // SECTION SELECTOR CHIPS + INTERACTIVE BUBBLE EDITOR
+            // SECTION SELECTOR CHIPS + INTERACTIVE BUBBLE / COLUMN EDITOR
             // =========================================================================
             Text(
                 text = translate("Select Statement Section to Edit:", language),
@@ -3991,7 +4001,8 @@ fun StatementTemplateSubPage(
                     "2. Sub-Heading",
                     "3. Customer Box",
                     "4. Loan Placeholders",
-                    "5. Bottom Footer"
+                    "5. Transaction Box",
+                    "6. Bottom Footer"
                 )
                 chipLabels.forEachIndexed { idx, label ->
                     val selected = activeSectionIndex == idx
@@ -4013,22 +4024,268 @@ fun StatementTemplateSubPage(
             }
 
             Text(
-                text = translate(sectionTitles[activeSectionIndex], language),
+                text = translate(sectionTitles.getOrElse(activeSectionIndex) { sectionTitles.first() }, language),
                 fontSize = 12.5.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = appColors.primaryAccent
             )
 
-            InteractiveMessageBubbleEditor(
-                value = currentSectionValue,
-                onValueChange = onUpdateSectionValue,
-                language = language,
-                appColors = appColors,
-                textColor = textColor,
-                subTextColor = subTextColor,
-                cardBorder = cardBorder,
-                bubbleTags = STATEMENT_BUBBLE_TAGS
+            if (activeSectionIndex == 4) {
+                TransactionTableColumnsEditor(
+                    activeColumns = activeTableColumns,
+                    onUpdateColumns = { updatedList ->
+                        viewModel.setStatementTableColumns(updatedList.joinToString(","))
+                    },
+                    language = language,
+                    appColors = appColors,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    cardBorder = cardBorder
+                )
+            } else {
+                InteractiveMessageBubbleEditor(
+                    value = currentSectionValue,
+                    onValueChange = onUpdateSectionValue,
+                    language = language,
+                    appColors = appColors,
+                    textColor = textColor,
+                    subTextColor = subTextColor,
+                    cardBorder = cardBorder,
+                    bubbleTags = STATEMENT_BUBBLE_TAGS
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun TransactionTableColumnsEditor(
+    activeColumns: List<String>,
+    onUpdateColumns: (List<String>) -> Unit,
+    language: String,
+    appColors: AppThemeColors,
+    textColor: Color,
+    subTextColor: Color,
+    cardBorder: Color
+) {
+    val allColumns = com.example.util.StatementGenerator.ALL_AVAILABLE_TABLE_COLUMNS
+    val availableToAdd = remember(activeColumns) {
+        allColumns.filter { (key, _) -> key !in activeColumns }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // 1. Active Columns List (Reorder with Up/Down arrows or Remove)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    if (appColors.isDark) Color(0xFF0F172A) else Color(0xFFF8FAFC),
+                    RoundedCornerShape(10.dp)
+                )
+                .border(1.dp, cardBorder, RoundedCornerShape(10.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = translate("Active Transaction Box Columns (Left → Right Order):", language),
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = textColor
+                )
+                Text(
+                    text = "${activeColumns.size} columns",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = appColors.primaryAccent
+                )
+            }
+
+            activeColumns.forEachIndexed { index, colKey ->
+                val displayName = allColumns.firstOrNull { it.first == colKey }?.second
+                    ?: com.example.util.StatementGenerator.getColumnHeaderLabel(colKey)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            if (appColors.isDark) Color(0xFF1E293B) else Color.White,
+                            RoundedCornerShape(8.dp)
+                        )
+                        .border(1.dp, cardBorder, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .background(appColors.primaryAccent.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 7.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = "#${index + 1}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = appColors.primaryAccent
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = displayName,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textColor
+                            )
+                            Text(
+                                text = "Header: ${com.example.util.StatementGenerator.getColumnHeaderLabel(colKey)}",
+                                fontSize = 10.sp,
+                                color = subTextColor
+                            )
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        // Move Up (Left in Table)
+                        IconButton(
+                            onClick = {
+                                if (index > 0) {
+                                    val mutable = activeColumns.toMutableList()
+                                    val item = mutable.removeAt(index)
+                                    mutable.add(index - 1, item)
+                                    onUpdateColumns(mutable)
+                                }
+                            },
+                            enabled = index > 0,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowUpward,
+                                contentDescription = "Move Column Left/Up",
+                                tint = if (index > 0) appColors.primaryAccent else subTextColor.copy(alpha = 0.35f),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        // Move Down (Right in Table)
+                        IconButton(
+                            onClick = {
+                                if (index < activeColumns.lastIndex) {
+                                    val mutable = activeColumns.toMutableList()
+                                    val item = mutable.removeAt(index)
+                                    mutable.add(index + 1, item)
+                                    onUpdateColumns(mutable)
+                                }
+                            },
+                            enabled = index < activeColumns.lastIndex,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowDownward,
+                                contentDescription = "Move Column Right/Down",
+                                tint = if (index < activeColumns.lastIndex) appColors.primaryAccent else subTextColor.copy(alpha = 0.35f),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        // Remove Column (keep at least 1 column)
+                        IconButton(
+                            onClick = {
+                                if (activeColumns.size > 1) {
+                                    onUpdateColumns(activeColumns.filterNot { it == colKey })
+                                }
+                            },
+                            enabled = activeColumns.size > 1,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Remove Column",
+                                tint = if (activeColumns.size > 1) Color(0xFFDC2626) else subTextColor.copy(alpha = 0.35f),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Available Columns to Add
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    if (appColors.isDark) Color(0xFF0F172A) else Color(0xFFF8FAFC),
+                    RoundedCornerShape(10.dp)
+                )
+                .border(1.dp, cardBorder, RoundedCornerShape(10.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = translate("Available Columns to Add (Tap to Include in Statement):", language),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = appColors.primaryAccent
             )
+            if (availableToAdd.isEmpty()) {
+                Text(
+                    text = translate("All available transaction columns are currently active.", language),
+                    fontSize = 11.sp,
+                    color = subTextColor
+                )
+            } else {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    availableToAdd.forEach { (colKey, label) ->
+                        Surface(
+                            onClick = {
+                                onUpdateColumns(activeColumns + colKey)
+                            },
+                            shape = RoundedCornerShape(18.dp),
+                            color = appColors.primaryAccent.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, appColors.primaryAccent.copy(alpha = 0.5f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AddCircleOutline,
+                                    contentDescription = null,
+                                    tint = appColors.primaryAccent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = label,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = appColors.primaryAccent
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

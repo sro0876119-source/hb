@@ -140,7 +140,7 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                         AnimatedSlideInItem(index = 0) {
                             SettingsMenuCard(
                                 title = translate("Business Profile & UPI", language),
-                                subtitle = translate("Merchant name, UPI ID, payment links & QR code", language),
+                                subtitle = translate("Merchant name, UPI ID & Camera QR scanner", language),
                                 icon = Icons.Default.Home,
                                 iconTint = Color(0xFF0F766E),
                                 iconBgColor = Color(0xFFCCFBF1),

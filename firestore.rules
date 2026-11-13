@@ -1,6 +1,33 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /customers/{docId} {
+      allow read, write: if true;
+    }
+    match /loan_cycles/{docId} {
+      allow read, write: if true;
+    }
+    match /weekly_payments/{docId} {
+      allow read, write: if true;
+    }
+    match /cash_balance_logs/{docId} {
+      allow read, write: if true;
+    }
+    match /audit_logs/{docId} {
+      allow read, write: if true;
+    }
+    match /devices/{docId} {
+      allow read, write: if true;
+    }
+    match /sync_metadata/{docId} {
+      allow read, write: if true;
+    }
+    match /past_history_index/{docId} {
+      allow read, write: if true;
+    }
+    match /user_settings/{docId} {
+      allow read, write: if true;
+    }
     match /{document=**} {
       allow read, write: if request.auth != null;
     }

@@ -130,17 +130,6 @@ object SmsService {
         }
     }
 
-    private fun getUpiLink(context: Context, upiId: String, customerName: String): String {
-        val prefs = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE)
-        val enabled = prefs.getBoolean("upi_link_sharing", true)
-        val rawUpiLink = prefs.getString("upi_link", "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P") ?: "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P"
-        return if (enabled) {
-            rawUpiLink
-        } else {
-            ""
-        }
-    }
-
     fun triggerNewLoanSms(
         context: Context,
         customer: Customer,
@@ -152,7 +141,6 @@ object SmsService {
         phone: String = customer.phone
     ) {
         val totalDue = loan.loanAmount + loan.interestAmount
-        val upiLink = getUpiLink(context, upiId, customer.name)
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
 
@@ -169,7 +157,6 @@ object SmsService {
             .replace("{upi}", upiId)
             .replace("{phone}", resolvedPhone)
             .replace("{phone_number}", resolvedPhone)
-            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 
@@ -191,7 +178,6 @@ object SmsService {
         val totalDue = loan.loanAmount + loan.interestAmount
         val currentPaid = loan.paidAmount + paymentAmount
         val remaining = maxOf(0.0, totalDue - currentPaid)
-        val upiLink = getUpiLink(context, upiId, customer.name)
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
         val resolvedPhone = phone.ifBlank { customer.phone }
@@ -208,7 +194,6 @@ object SmsService {
             .replace("{upi}", upiId)
             .replace("{phone}", resolvedPhone)
             .replace("{phone_number}", resolvedPhone)
-            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 
@@ -227,7 +212,6 @@ object SmsService {
     ) {
         val totalDue = loan.loanAmount + loan.interestAmount
         val remaining = maxOf(0.0, totalDue - loan.paidAmount)
-        val upiLink = getUpiLink(context, upiId, customer.name)
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
         val resolvedPhone = phone.ifBlank { customer.phone }
@@ -242,7 +226,6 @@ object SmsService {
             .replace("{upi}", upiId)
             .replace("{phone}", resolvedPhone)
             .replace("{phone_number}", resolvedPhone)
-            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 
@@ -291,7 +274,6 @@ object SmsService {
         }
         val totalDue = loan.loanAmount + loan.interestAmount
         val remaining = maxOf(0.0, totalDue - loan.paidAmount)
-        val upiLink = getUpiLink(context, upiId, customer.name)
         val formattedDate = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         val busName = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE).getString("business_name", "MD Finance") ?: "MD Finance"
         val resolvedPhone = phone.ifBlank { customer.phone }
@@ -306,7 +288,6 @@ object SmsService {
             .replace("{upi}", upiId)
             .replace("{phone}", resolvedPhone)
             .replace("{phone_number}", resolvedPhone)
-            .replace("{upi_link}", resolvedPhone.ifBlank { upiLink })
             .replace("{business}", busName)
             .replace("{date}", formattedDate)
 

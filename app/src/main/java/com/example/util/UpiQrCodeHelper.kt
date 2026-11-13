@@ -122,6 +122,75 @@ object UpiQrCodeHelper {
     }
 
     /**
+     * Generates a clean, borderless QR code Bitmap directly from a scanned QR payload string
+     * using ZXing's QRCodeWriter so statements can paste the QR code directly without extra background clutter.
+     */
+    fun generateQrBitmapFromPayload(payload: String, sizePx: Int = 512): Bitmap? {
+        val cleanPayload = payload.trim()
+        if (cleanPayload.isEmpty()) return null
+        return try {
+            val hints = mapOf(
+                com.google.zxing.EncodeHintType.CHARACTER_SET to "UTF-8",
+                com.google.zxing.EncodeHintType.MARGIN to 0
+            )
+            val bitMatrix = com.google.zxing.qrcode.QRCodeWriter().encode(
+                cleanPayload,
+                com.google.zxing.BarcodeFormat.QR_CODE,
+                sizePx,
+                sizePx,
+                hints
+            )
+            val width = bitMatrix.width
+            val height = bitMatrix.height
+            val pixels = IntArray(width * height)
+            for (y in 0 until height) {
+                val offset = y * width
+                for (x in 0 until width) {
+                    pixels[offset + x] = if (bitMatrix.get(x, y)) {
+                        android.graphics.Color.BLACK
+                    } else {
+                        android.graphics.Color.WHITE
+                    }
+                }
+            }
+            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+                setPixels(pixels, 0, width, 0, 0, width, height)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Saves a camera-scanned QR code payload by generating a crisp QR PNG file in `filesDir/custom_payment_qr.png`
+     * and returning both the saved File and decoded UPI metadata.
+     */
+    fun saveScannedQrPayload(context: Context, rawPayload: String): Pair<File?, DecodedUpiQrData?> {
+        val trimmed = rawPayload.trim()
+        if (trimmed.isEmpty()) return Pair(null, null)
+        return try {
+            val decoded = parseUpiPayload(trimmed) ?: DecodedUpiQrData(
+                rawPayload = trimmed,
+                upiId = "",
+                payeeName = "",
+                upiUri = trimmed
+            )
+            val qrBitmap = generateQrBitmapFromPayload(trimmed, 512) ?: return Pair(null, decoded)
+            val destFile = File(context.filesDir, SAVED_QR_FILENAME)
+            FileOutputStream(destFile).use { out ->
+                qrBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            val cacheFile = File(context.cacheDir, SAVED_QR_FILENAME)
+            FileOutputStream(cacheFile).use { out ->
+                qrBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            Pair(destFile, decoded)
+        } catch (_: Exception) {
+            Pair(null, null)
+        }
+    }
+
+    /**
      * Loads and decodes a QR image from a content/file Uri, persists a clean PNG copy to
      * `filesDir/custom_payment_qr.png`, and returns both the saved File and any decoded UPI metadata.
      */
@@ -131,11 +200,18 @@ object UpiQrCodeHelper {
                 BitmapFactory.decodeStream(stream)
             } ?: return Pair(null, null)
 
+            val decoded = decodeQrBitmap(bitmap)
+            // If we decoded a QR payload, regenerate a clean borderless QR bitmap from the payload
+            val finalBitmap = if (decoded != null && decoded.rawPayload.isNotBlank()) {
+                generateQrBitmapFromPayload(decoded.rawPayload, 512) ?: bitmap
+            } else {
+                bitmap
+            }
+
             val destFile = File(context.filesDir, SAVED_QR_FILENAME)
             FileOutputStream(destFile).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                finalBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
-            val decoded = decodeQrBitmap(bitmap)
             Pair(destFile, decoded)
         } catch (_: Exception) {
             Pair(null, null)

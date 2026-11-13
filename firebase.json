@@ -1,6 +1,10 @@
 {
   "firestore": [
     {
+      "database": "(default)",
+      "rules": "firestore.rules"
+    },
+    {
       "database": "ai-studio-android-remixrem-50ea721d-fe66-4687-ae8c-80689d204dd6",
       "rules": "firestore.rules"
     }

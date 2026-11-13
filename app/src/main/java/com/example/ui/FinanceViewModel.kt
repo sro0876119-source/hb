@@ -757,6 +757,14 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     )
     val statementFooterTemplate = _statementFooterTemplate.asStateFlow()
 
+    private val _statementTableColumns = MutableStateFlow(
+        prefs.getString(
+            "statement_table_columns",
+            com.example.util.StatementGenerator.DEFAULT_STATEMENT_TABLE_COLUMNS
+        ) ?: com.example.util.StatementGenerator.DEFAULT_STATEMENT_TABLE_COLUMNS
+    )
+    val statementTableColumns = _statementTableColumns.asStateFlow()
+
     private val _statementCustomizationCode = MutableStateFlow(
         prefs.getString(
             "statement_customization_code",
@@ -1687,6 +1695,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             _statementCustomerBoxTemplate.value = prefs.getString("statement_customer_box", defaultStatementCustomerBox) ?: defaultStatementCustomerBox
             _statementLoanBoxTemplate.value = prefs.getString("statement_loan_box", defaultStatementLoanBox) ?: defaultStatementLoanBox
             _statementFooterTemplate.value = prefs.getString("statement_footer_text", defaultStatementFooter) ?: defaultStatementFooter
+            _statementTableColumns.value = prefs.getString("statement_table_columns", com.example.util.StatementGenerator.DEFAULT_STATEMENT_TABLE_COLUMNS) ?: com.example.util.StatementGenerator.DEFAULT_STATEMENT_TABLE_COLUMNS
             _statementCustomizationCode.value = prefs.getString("statement_customization_code", _statementCustomizationCode.value) ?: _statementCustomizationCode.value
 
             val refreshedGroupsStr = prefs.getString("collection_groups_list", defaultGroups) ?: defaultGroups
@@ -3029,18 +3038,90 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         logPreferenceChange("statement_footer_text", old, value)
     }
 
+    fun setStatementTableColumns(columnsCsv: String) {
+        val parsed = com.example.util.StatementGenerator.parseStatementTableColumns(columnsCsv)
+        val normalized = parsed.joinToString(",")
+        val old = _statementTableColumns.value
+        _statementTableColumns.value = normalized
+        prefs.edit().putString("statement_table_columns", normalized).apply()
+        markDirty()
+        logPreferenceChange("statement_table_columns", old, normalized)
+    }
+
     fun resetStatementTemplatesToDefault() {
         setStatementHeaderTitle(defaultStatementHeaderTitle)
         setStatementHeaderSubtitle(defaultStatementHeaderSubtitle)
         setStatementCustomerBoxTemplate(defaultStatementCustomerBox)
         setStatementLoanBoxTemplate(defaultStatementLoanBox)
         setStatementFooterTemplate(defaultStatementFooter)
+        setStatementTableColumns(com.example.util.StatementGenerator.DEFAULT_STATEMENT_TABLE_COLUMNS)
     }
 
     fun setQrImageUri(uriStr: String) {
         _qrImageUri.value = uriStr
         prefs.edit().putString("qr_image_uri", uriStr).apply()
         markDirty()
+    }
+
+    fun saveScannedQrCodePayload(rawPayload: String) {
+        val cleanPayload = rawPayload.trim()
+        if (cleanPayload.isEmpty()) return
+        val appCtx = getApplication<Application>()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val (savedFile, decodedUpi) = com.example.util.UpiQrCodeHelper.saveScannedQrPayload(appCtx, cleanPayload)
+                if (savedFile == null || !savedFile.exists()) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        android.widget.Toast.makeText(appCtx, "Could not generate QR image from scanned code", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+
+                val cacheFile = java.io.File(appCtx.cacheDir, com.example.util.UpiQrCodeHelper.SAVED_QR_FILENAME)
+                savedFile.copyTo(cacheFile, overwrite = true)
+                val providerUri = androidx.core.content.FileProvider.getUriForFile(
+                    appCtx, "${appCtx.packageName}.fileprovider", cacheFile
+                )
+                val uriStr = "${providerUri}?t=${System.currentTimeMillis()}"
+                _qrImageUri.value = uriStr
+                val edit = prefs.edit()
+                    .putString("qr_image_uri", uriStr)
+                    .putString("qr_raw_payload", cleanPayload)
+
+                if (decodedUpi != null) {
+                    if (decodedUpi.upiId.isNotBlank()) {
+                        _upiId.value = decodedUpi.upiId
+                        edit.putString("upi_id", decodedUpi.upiId)
+                    }
+                    if (decodedUpi.payeeName.isNotBlank()) {
+                        edit.putString("qr_decoded_payee", decodedUpi.payeeName)
+                    }
+                }
+                edit.apply()
+
+                com.example.network.CloudLedgerSyncEngine.uploadQrCodeToFirebaseStorage(
+                    context = appCtx,
+                    qrFile = savedFile,
+                    decodedUpiId = decodedUpi?.upiId ?: _upiId.value,
+                    rawPayload = cleanPayload,
+                    decodedPayeeName = decodedUpi?.payeeName.orEmpty()
+                )
+                markDirty()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    val msg = if (decodedUpi != null && decodedUpi.upiId.isNotBlank()) {
+                        "QR Scanned! UPI ID (${decodedUpi.upiId}) mapped & synced to Cloud!"
+                    } else {
+                        "QR Code scanned, saved & synced to Cloud!"
+                    }
+                    android.widget.Toast.makeText(appCtx, msg, android.widget.Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.widget.Toast.makeText(appCtx, "Failed to save scanned QR Code: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     fun saveSelectedQrCode(uri: Uri) {
@@ -3058,7 +3139,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     fallbackFile
                 }
 
-                // Also copy to cacheDir so FileProvider sharing works seamlessly
                 val cacheFile = java.io.File(appCtx.cacheDir, com.example.util.UpiQrCodeHelper.SAVED_QR_FILENAME)
                 targetFile.copyTo(cacheFile, overwrite = true)
                 val providerUri = androidx.core.content.FileProvider.getUriForFile(
@@ -3073,38 +3153,25 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         _upiId.value = decodedUpi.upiId
                         edit.putString("upi_id", decodedUpi.upiId)
                     }
-                    if (decodedUpi.upiUri.isNotBlank()) {
-                        _upiLink.value = decodedUpi.upiUri
-                        edit.putString("upi_link", decodedUpi.upiUri)
-                    }
                     if (decodedUpi.payeeName.isNotBlank()) {
                         edit.putString("qr_decoded_payee", decodedUpi.payeeName)
+                    }
+                    if (decodedUpi.rawPayload.isNotBlank()) {
+                        edit.putString("qr_raw_payload", decodedUpi.rawPayload)
                     }
                 }
                 edit.apply()
 
-                // Upload QR code PNG to Firebase Storage and sync decoded QR/UPI details in Firestore
                 com.example.network.CloudLedgerSyncEngine.uploadQrCodeToFirebaseStorage(
                     context = appCtx,
                     qrFile = targetFile,
                     decodedUpiId = decodedUpi?.upiId ?: _upiId.value,
-                    decodedUpiLink = decodedUpi?.upiUri ?: _upiLink.value,
+                    rawPayload = decodedUpi?.rawPayload.orEmpty(),
                     decodedPayeeName = decodedUpi?.payeeName.orEmpty()
                 )
                 markDirty()
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    val msg = if (decodedUpi != null && decodedUpi.upiId.isNotBlank()) {
-                        "QR Code saved, synced to Cloud & UPI ID (${decodedUpi.upiId}) mapped!"
-                    } else {
-                        "QR Code saved & synced to Cloud Storage!"
-                    }
-                    android.widget.Toast.makeText(appCtx, msg, android.widget.Toast.LENGTH_LONG).show()
-                }
             } catch (e: Exception) {
                 e.printStackTrace()
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    android.widget.Toast.makeText(appCtx, "Failed to save QR Code: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-                }
             }
         }
     }

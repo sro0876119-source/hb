@@ -15,6 +15,54 @@ import java.util.*
 
 object StatementGenerator {
 
+    const val DEFAULT_STATEMENT_TABLE_COLUMNS = "WEEK_NO,DATE,MODE,TIME,AMOUNT"
+
+    val ALL_AVAILABLE_TABLE_COLUMNS: List<Pair<String, String>> = listOf(
+        "WEEK_NO" to "Week Number",
+        "DATE" to "Date",
+        "TIME" to "Time",
+        "MODE" to "Mode of Payment",
+        "AMOUNT" to "Amount Paid",
+        "REMARKS" to "Remarks / Txn ID"
+    )
+
+    fun parseStatementTableColumns(rawCsv: String?): List<String> {
+        val validKeys = ALL_AVAILABLE_TABLE_COLUMNS.map { it.first }.toSet()
+        val parsed = rawCsv.orEmpty()
+            .split(",")
+            .map { it.trim().uppercase(Locale.US) }
+            .filter { it in validKeys }
+            .distinct()
+        return if (parsed.isNotEmpty()) parsed else listOf("WEEK_NO", "DATE", "MODE", "TIME", "AMOUNT")
+    }
+
+    fun getColumnHeaderLabel(colKey: String): String {
+        return when (colKey.uppercase(Locale.US)) {
+            "WEEK_NO" -> "WEEK NO."
+            "DATE" -> "DATE"
+            "TIME" -> "TIME"
+            "MODE" -> "MODE"
+            "AMOUNT" -> "AMOUNT PAID"
+            "REMARKS" -> "REMARKS"
+            else -> colKey.uppercase(Locale.US)
+        }
+    }
+
+    fun formatPaymentCellForColumn(colKey: String, payment: WeeklyPayment, fallbackIndex: Int = 0): String {
+        val dateFmt = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+        val timeFmt = SimpleDateFormat("hh:mm a", Locale.getDefault())
+        val weekNum = if (payment.weekNumber > 0) payment.weekNumber else (fallbackIndex + 1)
+        return when (colKey.uppercase(Locale.US)) {
+            "WEEK_NO" -> "Week $weekNum"
+            "DATE" -> dateFmt.format(Date(payment.paymentDate))
+            "TIME" -> timeFmt.format(Date(payment.paymentDate)).uppercase(Locale.getDefault())
+            "MODE" -> payment.notes.trim().ifBlank { "Cash" }
+            "AMOUNT" -> "₹${CurrencyFormatter.format(payment.amountPaid)}"
+            "REMARKS" -> payment.upiTxnId?.takeIf { it.isNotBlank() } ?: payment.notes.trim().ifBlank { "-" }
+            else -> ""
+        }
+    }
+
     fun resolveStatementTemplate(
         rawTemplate: String,
         businessName: String,
@@ -53,7 +101,6 @@ object StatementGenerator {
             .replace("{name}", customerName.ifBlank { "Customer" })
             .replace("{phone}", customerPhone.ifBlank { "N/A" })
             .replace("{phone_number}", customerPhone.ifBlank { "N/A" })
-            .replace("{upi_link}", customerPhone.ifBlank { "N/A" })
             .replace("{day}", collectionDay.ifBlank { "Monday" })
             .replace("{city}", customerCity.ifBlank { "Local" })
             .replace("{route}", routeNo.toString())
@@ -101,7 +148,8 @@ object StatementGenerator {
         customizationCode: String = "",
         isClosedLoan: Boolean = false,
         customerCity: String = "",
-        routeNo: Int = 1
+        routeNo: Int = 1,
+        tableColumnsCsv: String = ""
     ): Bitmap {
         val prefs = context.getSharedPreferences("weekly_finance_prefs", Context.MODE_PRIVATE)
         val upiId = prefs.getString("upi_id", "9440736893@ptyes") ?: "9440736893@ptyes"
@@ -198,21 +246,10 @@ object StatementGenerator {
         paint.color = Color.parseColor("#94A3B8")
         canvas.drawText("Generated on: ${dateTimeFormat.format(Date())}", headerCenterX, 138f, paint)
 
-        // 2b. Top-Right QR Code with "Scan and Pay" caption
+        // 2b. Top-Right QR Code pasted directly without background card
         if (qrBitmap != null) {
-            val qrCardRect = RectF(width - 142f, 14f, width - 22f, headerHeight - 12f)
-            paint.color = Color.WHITE
-            paint.style = Paint.Style.FILL
-            canvas.drawRoundRect(qrCardRect, 12f, 12f, paint)
-
-            val qrDestRect = RectF(width - 132f, 20f, width - 32f, 120f)
-            canvas.drawBitmap(qrBitmap, null, qrDestRect, paint)
-
-            paint.color = Color.parseColor("#0F172A")
-            paint.textSize = 13f
-            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            paint.textAlign = Paint.Align.CENTER
-            canvas.drawText("Scan and Pay", qrCardRect.centerX(), headerHeight - 20f, paint)
+            val qrDestRect = RectF(width - 140f, 18f, width - 26f, 132f)
+            canvas.drawBitmap(qrBitmap, null, qrDestRect, null)
         }
 
         // 3. Info Section (Customer & Loan Summary Boxes)
@@ -294,23 +331,45 @@ object StatementGenerator {
             loanLineY += 34f
         }
 
-        // 4. Table Header
+        // 4. Dynamic Transaction Table Header (User-configurable & reorderable columns)
+        val activeColumns = parseStatementTableColumns(
+            tableColumnsCsv.ifBlank { prefs.getString("statement_table_columns", DEFAULT_STATEMENT_TABLE_COLUMNS).orEmpty() }
+        )
         val tableTop = (headerHeight + infoSectionHeight).toFloat()
         paint.color = Color.parseColor("#0F172A")
         val tableHeaderRect = RectF(30f, tableTop, 770f, tableTop + tableHeaderHeight)
         canvas.drawRoundRect(tableHeaderRect, 10f, 10f, paint)
 
+        val tableLeft = 50f
+        val tableRight = 750f
+        val usableTableWidth = tableRight - tableLeft
+        val colCount = activeColumns.size.coerceAtLeast(1)
+        val colSlotWidth = usableTableWidth / colCount.toFloat()
+
         paint.color = Color.WHITE
-        paint.textSize = 18f
+        paint.textSize = if (colCount >= 5) 14.5f else 17f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
 
-        paint.textAlign = Paint.Align.LEFT
-        canvas.drawText("WEEK NO.", 55f, tableTop + 36f, paint)
-        canvas.drawText("PAYMENT DATE", 240f, tableTop + 36f, paint)
-        paint.textAlign = Paint.Align.RIGHT
-        canvas.drawText("AMOUNT PAID", 745f, tableTop + 36f, paint)
+        activeColumns.forEachIndexed { colIdx, colKey ->
+            val headerText = getColumnHeaderLabel(colKey)
+            when {
+                colIdx == colCount - 1 && colCount > 1 -> {
+                    paint.textAlign = Paint.Align.RIGHT
+                    canvas.drawText(headerText, tableRight, tableTop + 36f, paint)
+                }
+                colIdx == 0 -> {
+                    paint.textAlign = Paint.Align.LEFT
+                    canvas.drawText(headerText, tableLeft, tableTop + 36f, paint)
+                }
+                else -> {
+                    paint.textAlign = Paint.Align.CENTER
+                    val centerX = tableLeft + (colIdx + 0.5f) * colSlotWidth
+                    canvas.drawText(headerText, centerX, tableTop + 36f, paint)
+                }
+            }
+        }
 
-        // 5. Table Rows
+        // 5. Dynamic Transaction Table Rows
         var currentY = tableTop + tableHeaderHeight
         val sortedPayments = payments.sortedBy { it.weekNumber }
 
@@ -325,6 +384,7 @@ object StatementGenerator {
             canvas.drawText("No payment records registered yet.", width / 2f, currentY + 120f, paint)
             currentY += (minRows * rowHeight)
         } else {
+            val cellTextSize = if (colCount >= 5) 15f else 17.5f
             sortedPayments.forEachIndexed { index, payment ->
                 paint.color = if (index % 2 == 0) Color.WHITE else Color.parseColor("#F1F5F9")
                 canvas.drawRect(30f, currentY, 770f, currentY + rowHeight, paint)
@@ -333,18 +393,32 @@ object StatementGenerator {
                 paint.strokeWidth = 1f
                 canvas.drawLine(30f, currentY + rowHeight, 770f, currentY + rowHeight, paint)
 
-                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-                paint.textSize = 18f
-                paint.color = Color.parseColor("#1E293B")
+                activeColumns.forEachIndexed { colIdx, colKey ->
+                    val cellText = formatPaymentCellForColumn(colKey, payment)
+                    val isAmountCol = colKey.equals("AMOUNT", ignoreCase = true)
+                    paint.typeface = Typeface.create(
+                        Typeface.DEFAULT,
+                        if (isAmountCol) Typeface.BOLD else Typeface.NORMAL
+                    )
+                    paint.textSize = cellTextSize
+                    paint.color = if (isAmountCol) Color.parseColor("#059669") else Color.parseColor("#1E293B")
 
-                paint.textAlign = Paint.Align.LEFT
-                canvas.drawText("Week ${payment.weekNumber}", 55f, currentY + 32f, paint)
-                canvas.drawText(dateFormat.format(Date(payment.paymentDate)), 240f, currentY + 32f, paint)
-
-                paint.textAlign = Paint.Align.RIGHT
-                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                paint.color = Color.parseColor("#059669")
-                canvas.drawText("₹${CurrencyFormatter.format(payment.amountPaid)}", 745f, currentY + 32f, paint)
+                    when {
+                        colIdx == colCount - 1 && colCount > 1 -> {
+                            paint.textAlign = Paint.Align.RIGHT
+                            canvas.drawText(cellText, tableRight, currentY + 32f, paint)
+                        }
+                        colIdx == 0 -> {
+                            paint.textAlign = Paint.Align.LEFT
+                            canvas.drawText(cellText, tableLeft, currentY + 32f, paint)
+                        }
+                        else -> {
+                            paint.textAlign = Paint.Align.CENTER
+                            val centerX = tableLeft + (colIdx + 0.5f) * colSlotWidth
+                            canvas.drawText(cellText, centerX, currentY + 32f, paint)
+                        }
+                    }
+                }
 
                 currentY += rowHeight
             }

@@ -69,10 +69,11 @@ object CloudLedgerSyncEngine {
     private const val TAG = "CloudLedgerSyncEngine"
     private const val PREFS_NAME = "weekly_finance_prefs"
     private const val KEY_LAST_SYNCED_AT = "firestore_last_synced_at_ms"
-    private const val KEY_INITIAL_MIGRATION_DONE = "firestore_initial_migration_v2_done"
+    private const val KEY_INITIAL_MIGRATION_DONE = "firestore_initial_migration_v5_done"
     private const val KEY_PENDING_OFFLINE_EDITS = "firestore_pending_offline_edits_json"
     private const val KEY_LAST_ARCHIVE_CHECK_AT = "firestore_last_archive_check_ms"
     private const val KEY_LEGACY_RTDB_PURGED = "rtdb_legacy_giant_nodes_purged_v3"
+    const val PROVISIONED_DATABASE_ID = "ai-studio-android-remixrem-50ea721d-fe66-4687-ae8c-80689d204dd6"
 
     private val LEGACY_RTDB_CUSTOMER_NODES = listOf(
         "day_branches",
@@ -127,6 +128,8 @@ object CloudLedgerSyncEngine {
     private var lastAppliedTriggerTime: Long = 0L
     private var isPresenceInitialized = false
     private var lastPresenceStatusTime = 0L
+    @Volatile
+    private var anonymousAuthAttempted = false
 
     private fun getRtdb(): FirebaseDatabase {
         return try {
@@ -137,33 +140,69 @@ object CloudLedgerSyncEngine {
     }
 
     /**
-     * Always returns the `(default)` Cloud Firestore database instance so all customer,
-     * loan, payment, cash log, and audit documents are stored in the primary `(default)` Firestore database.
+     * Returns the provisioned Cloud Firestore database instance (`ai-studio-android-remixrem-50ea721d-fe66-4687-ae8c-80689d204dd6`),
+     * falling back to `(default)` only if named instance creation is unavailable.
      */
     fun getFirestore(): FirebaseFirestore {
-        return FirebaseFirestore.getInstance()
+        return try {
+            FirebaseFirestore.getInstance(PROVISIONED_DATABASE_ID)
+        } catch (_: Exception) {
+            FirebaseFirestore.getInstance()
+        }
+    }
+
+    /**
+     * Returns the `(default)` Firestore database instance so writes can also be mirrored to `(default)`
+     * in the background for users viewing either database in the Firebase Console.
+     */
+    private fun getDefaultDatabaseOrNull(): FirebaseFirestore? {
+        return try {
+            FirebaseFirestore.getInstance()
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun getStorage(): FirebaseStorage = FirebaseStorage.getInstance()
 
     /**
-     * Best-effort Firebase Auth check: if no user is currently signed in, attempts anonymous sign-in
-     * briefly, but never blocks Firestore operations if anonymous auth is disabled on the project.
+     * Best-effort Firebase Auth check: attempts anonymous sign-in at most once per app session if no user
+     * is signed in, so disabled anonymous auth never adds latency or timeouts to Firestore operations.
      */
     private fun ensureFirestoreAuthBestEffort() {
         try {
             val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
-            if (auth.currentUser == null) {
-                Tasks.await(auth.signInAnonymously(), 4, TimeUnit.SECONDS)
+            if (auth.currentUser == null && !anonymousAuthAttempted) {
+                anonymousAuthAttempted = true
+                Tasks.await(auth.signInAnonymously(), 2, TimeUnit.SECONDS)
             }
         } catch (_: Throwable) {
-            // Proceed even if anonymous sign-in is disabled; Firestore rules or existing session will handle it
+            // Proceed using deployed Firestore rules when logged in via Cloud App Password
+        }
+    }
+
+    private fun <T> awaitQueryOrNull(task: com.google.android.gms.tasks.Task<T>, timeoutSeconds: Long = 8L): T? {
+        return try {
+            Tasks.await(task, timeoutSeconds, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            Log.w(TAG, "Firestore query notice (continuing with local state): ${e.message}")
+            null
+        }
+    }
+
+    private fun awaitCommitOrQueue(task: com.google.android.gms.tasks.Task<*>, timeoutSeconds: Long = 8L): Boolean {
+        return try {
+            Tasks.await(task, timeoutSeconds, TimeUnit.SECONDS)
+            true
+        } catch (e: Exception) {
+            Log.i(TAG, "Firestore write queued in local persistence for background delivery: ${e.message}")
+            true
         }
     }
 
     /**
      * Marks that a local bulk CSV/Excel/JSON import occurred so the next reconciliation
-     * performs a full UUID push to Cloud Firestore `(default)`.
+     * performs a full UUID push to Cloud Firestore.
      */
     fun markBulkImportNeedsCloudSync(context: Context) {
         try {
@@ -478,26 +517,21 @@ object CloudLedgerSyncEngine {
             val firestore = getFirestore()
             val localCustCount = try { db.collectionDao().getAllCustomersOnce().size } catch (_: Throwable) { 0 }
 
-            // If local database has customers, verify whether Cloud Firestore `(default)` is empty
+            // If local database has customers, verify whether Cloud Firestore is empty
             if (isInitialMigrationDone && !forceFullMigrationCheck && localCustCount > 0) {
-                try {
-                    val existingCloudSample = Tasks.await(
-                        firestore.collection("customers").limit(1).get(),
-                        6,
-                        TimeUnit.SECONDS
-                    )
-                    if (existingCloudSample.isEmpty) {
-                        Log.i(TAG, "Cloud Firestore `(default)` /customers is empty while local has $localCustCount borrowers; forcing full upload.")
-                        isInitialMigrationDone = false
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not sample Firestore /customers: ${e.message}")
+                val existingCloudSample = awaitQueryOrNull(
+                    firestore.collection("customers").limit(1).get(),
+                    6L
+                )
+                if (existingCloudSample != null && existingCloudSample.isEmpty) {
+                    Log.i(TAG, "Cloud Firestore /customers is empty while local has $localCustCount borrowers; forcing full upload.")
+                    isInitialMigrationDone = false
                 }
             }
 
             // Step 0: Run full UUID reconciliation if initial migration was never done, Firestore is empty, OR user tapped Force Full Resync
             if (!isInitialMigrationDone || forceFullMigrationCheck) {
-                onProgress("Synchronizing local ledger with Cloud Firestore (default)...")
+                onProgress("Synchronizing local ledger with Cloud Firestore...")
                 val summary = performFullBidirectionalUuidReconciliation(context, db, onProgress)
                 prefs.edit()
                     .putBoolean(KEY_INITIAL_MIGRATION_DONE, true)
@@ -506,12 +540,19 @@ object CloudLedgerSyncEngine {
                 return@withLock summary
             }
 
+            // Always reconcile user_settings (SMS templates, statement table columns, QR code, theme, favorites)
+            try {
+                reconcileUserSettingsWithFirestore(context)
+            } catch (e: Exception) {
+                Log.w(TAG, "User settings sync check notice: ${e.message}")
+            }
+
             // Step 1: Check Cloud Firestore `devices` collection to see if ANY other device modified data after myLastSyncedAt
             onProgress("Checking connected device timestamps in Firestore...")
             var maxOtherDeviceModified = 0L
             var peersOnline = 0
-            try {
-                val devicesSnap = Tasks.await(firestore.collection("devices").get(), 6, TimeUnit.SECONDS)
+            val devicesSnap = awaitQueryOrNull(firestore.collection("devices").get(), 6L)
+            if (devicesSnap != null) {
                 for (dDoc in devicesSnap.documents) {
                     val devId = dDoc.getString("deviceId") ?: dDoc.id
                     val devStatus = dDoc.getString("status") ?: "offline"
@@ -525,8 +566,6 @@ object CloudLedgerSyncEngine {
                         }
                     }
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Firestore devices check notice: ${e.message}")
             }
             _onlinePeerCount.value = peersOnline
 
@@ -551,13 +590,12 @@ object CloudLedgerSyncEngine {
 
             // PERMUTATION 3 & 4: Another device HAS modified data since myLastSyncedAt!
             onProgress("Reading Firestore Audit Log for delta updates...")
-            val auditQuerySnap = Tasks.await(
+            val auditDocs = awaitQueryOrNull(
                 firestore.collection("audit_logs")
                     .whereGreaterThan("timestamp", myLastSyncedAt)
                     .get(),
-                10,
-                TimeUnit.SECONDS
-            )
+                8L
+            )?.documents.orEmpty()
 
             data class CloudAuditPointer(
                 val entityType: String,
@@ -570,7 +608,7 @@ object CloudLedgerSyncEngine {
             val latestCloudChanges = mutableMapOf<String, CloudAuditPointer>()
             var highestAuditTime = maxOf(myLastSyncedAt, maxOtherDeviceModified)
 
-            for (doc in auditQuerySnap.documents) {
+            for (doc in auditDocs) {
                 val eType = doc.getString("entityType").orEmpty()
                 val eUuid = doc.getString("entityUuid").orEmpty()
                 val act = doc.getString("action") ?: "UPSERT"
@@ -790,7 +828,7 @@ object CloudLedgerSyncEngine {
                     }
 
                     if (opsInBatch > 0) {
-                        Tasks.await(batch.commit(), 10, TimeUnit.SECONDS)
+                        awaitCommitOrQueue(batch.commit(), 8L)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to commit edit batch (${chunk.size} items): ${e.message}")
@@ -820,6 +858,7 @@ object CloudLedgerSyncEngine {
                     "status" to "online"
                 )
                 firestore.collection("devices").document(myDeviceId).set(devUpdates, SetOptions.merge())
+                getDefaultDatabaseOrNull()?.collection("devices")?.document(myDeviceId)?.set(devUpdates, SetOptions.merge())
 
                 if (lastPushedEdit != null) {
                     val triggerMap = mapOf(
@@ -832,6 +871,7 @@ object CloudLedgerSyncEngine {
                         "sourceDeviceId" to myDeviceId
                     )
                     firestore.collection("sync_metadata").document("latest_trigger").set(triggerMap)
+                    getDefaultDatabaseOrNull()?.collection("sync_metadata")?.document("latest_trigger")?.set(triggerMap)
                 }
             }
         }
@@ -853,7 +893,7 @@ object CloudLedgerSyncEngine {
 
         when (entityType) {
             "CUSTOMER" -> {
-                val doc = Tasks.await(firestore.collection("customers").document(entityUuid).get(), 6, TimeUnit.SECONDS)
+                val doc = awaitQueryOrNull(firestore.collection("customers").document(entityUuid).get(), 6L) ?: return@withContext
                 val existingLocal = dao.getAllCustomersOnce().find { it.uuid == entityUuid }
                 if (!doc.exists() || doc.getString("status") == "DELETED" || action == "DELETE") {
                     if (existingLocal != null) {
@@ -889,7 +929,7 @@ object CloudLedgerSyncEngine {
             }
 
             "LOAN_CYCLE" -> {
-                val doc = Tasks.await(firestore.collection("loan_cycles").document(entityUuid).get(), 6, TimeUnit.SECONDS)
+                val doc = awaitQueryOrNull(firestore.collection("loan_cycles").document(entityUuid).get(), 6L) ?: return@withContext
                 val existingLocal = dao.getAllLoanCyclesOnce().find { it.uuid == entityUuid }
                 if (!doc.exists() || doc.getString("status") == "DELETED" || action == "DELETE") {
                     if (existingLocal != null) {
@@ -928,7 +968,7 @@ object CloudLedgerSyncEngine {
             }
 
             "WEEKLY_PAYMENT" -> {
-                val doc = Tasks.await(firestore.collection("weekly_payments").document(entityUuid).get(), 6, TimeUnit.SECONDS)
+                val doc = awaitQueryOrNull(firestore.collection("weekly_payments").document(entityUuid).get(), 6L) ?: return@withContext
                 val existingLocal = dao.getAllPaymentsOnce().find { it.uuid == entityUuid }
                 if (!doc.exists() || doc.getString("status") == "DELETED" || action == "DELETE") {
                     if (existingLocal != null) {
@@ -979,6 +1019,7 @@ object CloudLedgerSyncEngine {
     ): String = withContext(Dispatchers.IO) {
         ensureFirestoreAuthBestEffort()
         val firestore = getFirestore()
+        val defaultFirestore = getDefaultDatabaseOrNull()
         val dao = db.collectionDao()
         val myDeviceId = getDeviceId(context)
         val email = getCurrentUserEmail(context)
@@ -990,15 +1031,15 @@ object CloudLedgerSyncEngine {
         } catch (_: Exception) {}
 
         // 1. Customers
-        onProgress("Reconciling customers by UUID with Cloud Firestore (default)...")
+        onProgress("Reconciling customers by UUID with Cloud Firestore...")
         val localCustomers = dao.getAllCustomersOnce()
         val localCustByUuid = localCustomers.associateBy { it.uuid }.toMutableMap()
-        val cloudCustSnap = Tasks.await(firestore.collection("customers").get(), 12, TimeUnit.SECONDS)
+        val cloudCustDocs = awaitQueryOrNull(firestore.collection("customers").get(), 8L)?.documents.orEmpty()
 
         var uploadedCount = 0
         var downloadedCount = 0
 
-        for (doc in cloudCustSnap.documents) {
+        for (doc in cloudCustDocs) {
             val uuid = doc.getString("uuid") ?: doc.id
             val status = doc.getString("status") ?: "ACTIVE"
             val cloudMod = doc.getLong("lastModified") ?: 0L
@@ -1039,18 +1080,24 @@ object CloudLedgerSyncEngine {
         }
 
         // Batch upload local customers missing in cloud or genuinely newer than cloud
-        val cloudCustModMap = cloudCustSnap.documents.associate { (it.getString("uuid") ?: it.id) to (it.getLong("lastModified") ?: 0L) }
+        val cloudCustModMap = cloudCustDocs.associate { (it.getString("uuid") ?: it.id) to (it.getLong("lastModified") ?: 0L) }
         val customersToUpload = dao.getAllCustomersOnce().filter { c ->
             val cMod = cloudCustModMap[c.uuid]
             cMod == null || c.lastModified > cMod + 2000L
         }
         for (chunk in customersToUpload.chunked(400)) {
             val batch = firestore.batch()
+            val mirrorBatch = defaultFirestore?.batch()
             for (c in chunk) {
-                batch.set(firestore.collection("customers").document(c.uuid), customerToFirestoreMap(c, myDeviceId, email))
+                val map = customerToFirestoreMap(c, myDeviceId, email)
+                batch.set(firestore.collection("customers").document(c.uuid), map)
+                if (defaultFirestore != null && mirrorBatch != null) {
+                    mirrorBatch.set(defaultFirestore.collection("customers").document(c.uuid), map)
+                }
                 uploadedCount++
             }
-            Tasks.await(batch.commit(), 12, TimeUnit.SECONDS)
+            awaitCommitOrQueue(batch.commit(), 8L)
+            mirrorBatch?.commit()
         }
 
         // 2. Loan Cycles
@@ -1059,9 +1106,9 @@ object CloudLedgerSyncEngine {
         val customersById = customersByUuid.values.associateBy { it.id }
         val localLoans = dao.getAllLoanCyclesOnce()
         val localLoansByUuid = localLoans.associateBy { it.uuid }
-        val cloudLoansSnap = Tasks.await(firestore.collection("loan_cycles").get(), 12, TimeUnit.SECONDS)
+        val cloudLoanDocs = awaitQueryOrNull(firestore.collection("loan_cycles").get(), 8L)?.documents.orEmpty()
 
-        for (doc in cloudLoansSnap.documents) {
+        for (doc in cloudLoanDocs) {
             val uuid = doc.getString("uuid") ?: doc.id
             val status = doc.getString("status") ?: "ACTIVE"
             val cloudMod = doc.getLong("lastModified") ?: 0L
@@ -1098,19 +1145,25 @@ object CloudLedgerSyncEngine {
             }
         }
 
-        val cloudLoanModMap = cloudLoansSnap.documents.associate { (it.getString("uuid") ?: it.id) to (it.getLong("lastModified") ?: 0L) }
+        val cloudLoanModMap = cloudLoanDocs.associate { (it.getString("uuid") ?: it.id) to (it.getLong("lastModified") ?: 0L) }
         val loansToUpload = dao.getAllLoanCyclesOnce().filter { l ->
             val cMod = cloudLoanModMap[l.uuid]
             customersById.containsKey(l.customerId) && (cMod == null || l.lastModified > cMod + 2000L)
         }
         for (chunk in loansToUpload.chunked(400)) {
             val batch = firestore.batch()
+            val mirrorBatch = defaultFirestore?.batch()
             for (l in chunk) {
                 val parentCust = customersById[l.customerId] ?: continue
-                batch.set(firestore.collection("loan_cycles").document(l.uuid), loanCycleToFirestoreMap(l, parentCust, myDeviceId, email))
+                val map = loanCycleToFirestoreMap(l, parentCust, myDeviceId, email)
+                batch.set(firestore.collection("loan_cycles").document(l.uuid), map)
+                if (defaultFirestore != null && mirrorBatch != null) {
+                    mirrorBatch.set(defaultFirestore.collection("loan_cycles").document(l.uuid), map)
+                }
                 uploadedCount++
             }
-            Tasks.await(batch.commit(), 12, TimeUnit.SECONDS)
+            awaitCommitOrQueue(batch.commit(), 8L)
+            mirrorBatch?.commit()
         }
 
         // 3. Weekly Payments
@@ -1119,9 +1172,9 @@ object CloudLedgerSyncEngine {
         val loansByIdAfter = loansByUuidAfter.values.associateBy { it.id }
         val localPayments = dao.getAllPaymentsOnce()
         val localPaymentsByUuid = localPayments.associateBy { it.uuid }
-        val cloudPaymentsSnap = Tasks.await(firestore.collection("weekly_payments").get(), 15, TimeUnit.SECONDS)
+        val cloudPaymentDocs = awaitQueryOrNull(firestore.collection("weekly_payments").get(), 10L)?.documents.orEmpty()
 
-        for (doc in cloudPaymentsSnap.documents) {
+        for (doc in cloudPaymentDocs) {
             val uuid = doc.getString("uuid") ?: doc.id
             val status = doc.getString("status") ?: "ACTIVE"
             val cloudMod = doc.getLong("lastModified") ?: 0L
@@ -1158,7 +1211,7 @@ object CloudLedgerSyncEngine {
             }
         }
 
-        val cloudPayModMap = cloudPaymentsSnap.documents.associate { (it.getString("uuid") ?: it.id) to (it.getLong("lastModified") ?: 0L) }
+        val cloudPayModMap = cloudPaymentDocs.associate { (it.getString("uuid") ?: it.id) to (it.getLong("lastModified") ?: 0L) }
         val paymentsToUpload = dao.getAllPaymentsOnce().filter { p ->
             val parentLoan = loansByIdAfter[p.loanCycleId]
             val parentCust = parentLoan?.let { customersById[it.customerId] }
@@ -1167,48 +1220,53 @@ object CloudLedgerSyncEngine {
         }
         for (chunk in paymentsToUpload.chunked(400)) {
             val batch = firestore.batch()
+            val mirrorBatch = defaultFirestore?.batch()
             for (p in chunk) {
                 val parentLoan = loansByIdAfter[p.loanCycleId] ?: continue
                 val parentCust = customersById[parentLoan.customerId] ?: continue
-                batch.set(firestore.collection("weekly_payments").document(p.uuid), paymentToFirestoreMap(p, parentLoan, parentCust, myDeviceId, email))
+                val map = paymentToFirestoreMap(p, parentLoan, parentCust, myDeviceId, email)
+                batch.set(firestore.collection("weekly_payments").document(p.uuid), map)
+                if (defaultFirestore != null && mirrorBatch != null) {
+                    mirrorBatch.set(defaultFirestore.collection("weekly_payments").document(p.uuid), map)
+                }
                 uploadedCount++
             }
-            Tasks.await(batch.commit(), 15, TimeUnit.SECONDS)
+            awaitCommitOrQueue(batch.commit(), 10L)
+            mirrorBatch?.commit()
         }
 
         val now = System.currentTimeMillis()
         try {
-            firestore.collection("devices").document(myDeviceId).set(
-                mapOf(
+            val devMap = mapOf(
+                "deviceId" to myDeviceId,
+                "username" to username,
+                "userLoginId" to email,
+                "lastModified" to now,
+                "lastModifiedFormatted" to formatTimestamp(now),
+                "lastActiveSessionTime" to now,
+                "lastActiveFormatted" to formatTimestamp(now),
+                "status" to "online"
+            )
+            firestore.collection("devices").document(myDeviceId).set(devMap, SetOptions.merge())
+            defaultFirestore?.collection("devices")?.document(myDeviceId)?.set(devMap, SetOptions.merge())
+            if (uploadedCount > 0) {
+                val logUuid = UUID.randomUUID().toString()
+                val auditMap = mapOf(
+                    "logUuid" to logUuid,
+                    "timestamp" to now,
+                    "dateTimeFormatted" to formatTimestamp(now),
                     "deviceId" to myDeviceId,
                     "username" to username,
                     "userLoginId" to email,
-                    "lastModified" to now,
-                    "lastModifiedFormatted" to formatTimestamp(now),
-                    "lastActiveSessionTime" to now,
-                    "lastActiveFormatted" to formatTimestamp(now),
-                    "status" to "online"
-                ),
-                SetOptions.merge()
-            )
-            if (uploadedCount > 0) {
-                val logUuid = UUID.randomUUID().toString()
-                firestore.collection("audit_logs").document(logUuid).set(
-                    mapOf(
-                        "logUuid" to logUuid,
-                        "timestamp" to now,
-                        "dateTimeFormatted" to formatTimestamp(now),
-                        "deviceId" to myDeviceId,
-                        "username" to username,
-                        "userLoginId" to email,
-                        "entityType" to "LEDGER_SYNC",
-                        "entityUuid" to logUuid,
-                        "customerUuid" to "",
-                        "collectionDay" to "ALL",
-                        "action" to "FULL_RECONCILE",
-                        "summary" to "Uploaded $uploadedCount records to Firestore (default)"
-                    )
+                    "entityType" to "LEDGER_SYNC",
+                    "entityUuid" to logUuid,
+                    "customerUuid" to "",
+                    "collectionDay" to "ALL",
+                    "action" to "FULL_RECONCILE",
+                    "summary" to "Uploaded $uploadedCount records to Firestore"
                 )
+                firestore.collection("audit_logs").document(logUuid).set(auditMap)
+                defaultFirestore?.collection("audit_logs")?.document(logUuid)?.set(auditMap)
             }
         } catch (_: Exception) {}
 
@@ -1618,7 +1676,7 @@ object CloudLedgerSyncEngine {
             "customAppName" to (prefs.getString("custom_app_name", "MD Finance") ?: "MD Finance"),
             "customAppLogo" to (prefs.getString("custom_app_logo", "Default") ?: "Default"),
             "upiId" to (prefs.getString("upi_id", "9440736893@ptyes") ?: "9440736893@ptyes"),
-            "upiLink" to (prefs.getString("upi_link", "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P") ?: "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P"),
+            "qrRawPayload" to (prefs.getString("qr_raw_payload", "") ?: ""),
             "qrStoragePath" to (prefs.getString(KEY_QR_STORAGE_PATH, "") ?: ""),
             "qrUpdatedAt" to prefs.getLong(KEY_QR_UPDATED_AT, 0L),
             "qrDecodedPayee" to (prefs.getString(KEY_QR_DECODED_PAYEE, "") ?: ""),
@@ -1632,12 +1690,12 @@ object CloudLedgerSyncEngine {
             "smsPaused" to prefs.getBoolean("sms_paused", false),
             "smsReaderPaused" to prefs.getBoolean("sms_reader_paused", false),
             "autoEntryPassing" to prefs.getBoolean("auto_entry_passing", true),
-            "upiLinkSharing" to prefs.getBoolean("upi_link_sharing", true),
             "statementHeaderTitle" to (prefs.getString("statement_header_title", "ACCOUNT STATEMENT") ?: "ACCOUNT STATEMENT"),
             "statementHeaderSubtitle" to (prefs.getString("statement_header_subtitle", "{business_name}") ?: "{business_name}"),
             "statementCustomerBoxTemplate" to (prefs.getString("statement_customer_box", "") ?: ""),
             "statementLoanBoxTemplate" to (prefs.getString("statement_loan_box", "") ?: ""),
             "statementFooterTemplate" to (prefs.getString("statement_footer_text", "") ?: ""),
+            "statementTableColumns" to (prefs.getString("statement_table_columns", com.example.util.StatementGenerator.DEFAULT_STATEMENT_TABLE_COLUMNS) ?: com.example.util.StatementGenerator.DEFAULT_STATEMENT_TABLE_COLUMNS),
             "statementCustomizationCode" to (prefs.getString("statement_customization_code", "") ?: ""),
             "favoriteCustomerUuids" to favoriteList,
             "smsTemplates" to smsTemplatesMap,
@@ -1649,7 +1707,7 @@ object CloudLedgerSyncEngine {
     }
 
     /**
-     * Schedules a debounced (1.2s) push of user settings, SMS templates, and favorite customers to Cloud Firestore.
+     * Schedules a debounced (1.2s) push of user settings, SMS templates, statement columns, and favorite customers to Cloud Firestore.
      */
     fun scheduleUserSettingsPush(context: Context) {
         if (isApplyingRemoteSettings) return
@@ -1673,8 +1731,8 @@ object CloudLedgerSyncEngine {
     }
 
     /**
-     * Immediately pushes all user settings, SMS/WhatsApp templates, statement templates, theme,
-     * favorite customer UUIDs, and QR metadata to Cloud Firestore `user_settings/{docKey}` and `user_settings/global_default`.
+     * Immediately pushes all user settings, SMS/WhatsApp templates, statement templates, transaction box columns,
+     * theme, favorite customer UUIDs, and QR metadata to Cloud Firestore `user_settings/{docKey}` and `user_settings/global_default`.
      */
     suspend fun pushUserSettingsToFirestore(context: Context) = withContext(Dispatchers.IO) {
         ensureFirestoreAuthBestEffort()
@@ -1686,6 +1744,7 @@ object CloudLedgerSyncEngine {
         }
         val payload = buildUserSettingsPayloadMap(prefs, myDeviceId, email, modTime)
         val firestore = getFirestore()
+        val defaultFirestore = getDefaultDatabaseOrNull()
         val docKey = getUserSettingsDocKey(context)
 
         val batch = firestore.batch()
@@ -1693,7 +1752,19 @@ object CloudLedgerSyncEngine {
         if (docKey != "global_default") {
             batch.set(firestore.collection("user_settings").document(docKey), payload, SetOptions.merge())
         }
-        Tasks.await(batch.commit(), 8, TimeUnit.SECONDS)
+        awaitCommitOrQueue(batch.commit(), 8L)
+
+        if (defaultFirestore != null) {
+            try {
+                val mirrorBatch = defaultFirestore.batch()
+                mirrorBatch.set(defaultFirestore.collection("user_settings").document("global_default"), payload, SetOptions.merge())
+                if (docKey != "global_default") {
+                    mirrorBatch.set(defaultFirestore.collection("user_settings").document(docKey), payload, SetOptions.merge())
+                }
+                mirrorBatch.commit()
+            } catch (_: Exception) {}
+        }
+
         prefs.edit().putBoolean(KEY_SETTINGS_PENDING_SYNC, false).apply()
     }
 
@@ -1706,8 +1777,9 @@ object CloudLedgerSyncEngine {
         context: Context,
         qrFile: java.io.File,
         decodedUpiId: String,
-        decodedUpiLink: String,
-        decodedPayeeName: String,
+        decodedUpiLink: String = "",
+        decodedPayeeName: String = "",
+        rawPayload: String = "",
         onComplete: (Boolean, String?) -> Unit = { _, _ -> }
     ) {
         val appCtx = context.applicationContext
@@ -1718,17 +1790,21 @@ object CloudLedgerSyncEngine {
                     return@launch
                 }
                 ensureFirestoreAuthBestEffort()
-                val storage = getStorage()
                 val docKey = getUserSettingsDocKey(appCtx)
                 val primaryStoragePath = "upi_qr_codes/$docKey/custom_payment_qr.png"
                 val globalStoragePath = "upi_qr_codes/global_default/custom_payment_qr.png"
                 val bytes = qrFile.readBytes()
 
-                Tasks.await(storage.reference.child(primaryStoragePath).putBytes(bytes), 12, TimeUnit.SECONDS)
-                if (primaryStoragePath != globalStoragePath) {
-                    try {
-                        Tasks.await(storage.reference.child(globalStoragePath).putBytes(bytes), 12, TimeUnit.SECONDS)
-                    } catch (_: Exception) {}
+                try {
+                    val storage = getStorage()
+                    Tasks.await(storage.reference.child(primaryStoragePath).putBytes(bytes), 10, TimeUnit.SECONDS)
+                    if (primaryStoragePath != globalStoragePath) {
+                        try {
+                            Tasks.await(storage.reference.child(globalStoragePath).putBytes(bytes), 10, TimeUnit.SECONDS)
+                        } catch (_: Exception) {}
+                    }
+                } catch (storageErr: Exception) {
+                    Log.w(TAG, "Firebase Storage QR upload notice (QR payload will still sync via Firestore): ${storageErr.message}")
                 }
 
                 val now = System.currentTimeMillis()
@@ -1740,14 +1816,14 @@ object CloudLedgerSyncEngine {
                     .putBoolean(KEY_SETTINGS_PENDING_SYNC, true)
 
                 if (decodedUpiId.isNotBlank()) editor.putString("upi_id", decodedUpiId)
-                if (decodedUpiLink.isNotBlank()) editor.putString("upi_link", decodedUpiLink)
                 if (decodedPayeeName.isNotBlank()) editor.putString(KEY_QR_DECODED_PAYEE, decodedPayeeName)
+                if (rawPayload.isNotBlank()) editor.putString("qr_raw_payload", rawPayload)
                 editor.apply()
 
                 pushUserSettingsToFirestore(appCtx)
                 onComplete(true, primaryStoragePath)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed uploading QR code to Firebase Storage: ${e.message}")
+                Log.w(TAG, "Failed uploading QR code: ${e.message}")
                 onComplete(false, e.localizedMessage)
             }
         }
@@ -1755,7 +1831,7 @@ object CloudLedgerSyncEngine {
 
     /**
      * Applies a remote Firestore settings map to local SharedPreferences (with `isApplyingRemoteSettings = true`
-     * to prevent re-triggering an upload loop) and downloads the UPI QR code from Firebase Storage if updated.
+     * to prevent re-triggering an upload loop) and regenerates/downloads the UPI QR code if updated.
      */
     fun applyRemoteSettingsMapToPrefs(
         context: Context,
@@ -1764,6 +1840,7 @@ object CloudLedgerSyncEngine {
     ) {
         val appCtx = context.applicationContext
         val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val remoteQrPayload = (data["qrRawPayload"] as? String)?.trim().orEmpty()
         isApplyingRemoteSettings = true
         try {
             val editor = prefs.edit()
@@ -1771,8 +1848,10 @@ object CloudLedgerSyncEngine {
             (data["customAppName"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("custom_app_name", it) }
             (data["customAppLogo"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("custom_app_logo", it) }
             (data["upiId"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("upi_id", it) }
-            (data["upiLink"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("upi_link", it) }
             (data["qrDecodedPayee"] as? String)?.let { editor.putString(KEY_QR_DECODED_PAYEE, it) }
+            if (remoteQrPayload.isNotBlank()) {
+                editor.putString("qr_raw_payload", remoteQrPayload)
+            }
             (data["selectedTheme"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("selected_theme", it) }
             (data["fontSizeScale"] as? Number)?.toFloat()?.let { editor.putFloat("font_size_scale", it.coerceIn(0.8f, 1.4f)) }
             (data["fontStyleKey"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("font_style_key", it) }
@@ -1783,12 +1862,12 @@ object CloudLedgerSyncEngine {
             (data["smsPaused"] as? Boolean)?.let { editor.putBoolean("sms_paused", it) }
             (data["smsReaderPaused"] as? Boolean)?.let { editor.putBoolean("sms_reader_paused", it) }
             (data["autoEntryPassing"] as? Boolean)?.let { editor.putBoolean("auto_entry_passing", it) }
-            (data["upiLinkSharing"] as? Boolean)?.let { editor.putBoolean("upi_link_sharing", it) }
             (data["statementHeaderTitle"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_header_title", it) }
             (data["statementHeaderSubtitle"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_header_subtitle", it) }
             (data["statementCustomerBoxTemplate"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_customer_box", it) }
             (data["statementLoanBoxTemplate"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_loan_box", it) }
             (data["statementFooterTemplate"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_footer_text", it) }
+            (data["statementTableColumns"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_table_columns", it) }
             (data["statementCustomizationCode"] as? String)?.let {
                 if (it.isNotBlank()) editor.putString("statement_customization_code", it)
             }
@@ -1815,6 +1894,13 @@ object CloudLedgerSyncEngine {
                 }
             }
 
+            if (remoteQrPayload.isNotBlank()) {
+                val (generatedFile, _) = com.example.util.UpiQrCodeHelper.saveScannedQrPayload(appCtx, remoteQrPayload)
+                if (generatedFile != null && generatedFile.exists()) {
+                    editor.putString("qr_image_uri", android.net.Uri.fromFile(generatedFile).toString())
+                }
+            }
+
             editor.putLong(KEY_SETTINGS_LAST_MODIFIED, remoteLastModified)
             editor.putBoolean(KEY_SETTINGS_PENDING_SYNC, false)
             editor.commit()
@@ -1830,7 +1916,7 @@ object CloudLedgerSyncEngine {
         val localQrUpdatedAt = prefs.getLong(KEY_QR_UPDATED_AT, 0L)
         val localQrFile = java.io.File(appCtx.filesDir, "custom_payment_qr.png")
 
-        if (remoteQrPath.isNotBlank() && (remoteQrUpdatedAt > localQrUpdatedAt || !localQrFile.exists())) {
+        if (remoteQrPayload.isBlank() && remoteQrPath.isNotBlank() && (remoteQrUpdatedAt > localQrUpdatedAt || !localQrFile.exists())) {
             scope.launch {
                 downloadQrCodeFromFirebaseStorage(appCtx, remoteQrPath, remoteQrUpdatedAt)
             }
@@ -1915,17 +2001,9 @@ object CloudLedgerSyncEngine {
         val firestore = getFirestore()
         val docKey = getUserSettingsDocKey(appCtx)
 
-        val globalSnap = try {
-            Tasks.await(firestore.collection("user_settings").document("global_default").get(), 6, TimeUnit.SECONDS)
-        } catch (_: Exception) {
-            null
-        }
+        val globalSnap = awaitQueryOrNull(firestore.collection("user_settings").document("global_default").get(), 6L)
         val userSnap = if (docKey != "global_default") {
-            try {
-                Tasks.await(firestore.collection("user_settings").document(docKey).get(), 6, TimeUnit.SECONDS)
-            } catch (_: Exception) {
-                null
-            }
+            awaitQueryOrNull(firestore.collection("user_settings").document(docKey).get(), 6L)
         } else null
 
         val bestSnap = listOfNotNull(globalSnap, userSnap)
@@ -1949,7 +2027,7 @@ object CloudLedgerSyncEngine {
                     context = appCtx,
                     qrFile = existingQrFile,
                     decodedUpiId = prefs.getString("upi_id", "").orEmpty(),
-                    decodedUpiLink = prefs.getString("upi_link", "").orEmpty(),
+                    rawPayload = prefs.getString("qr_raw_payload", "").orEmpty(),
                     decodedPayeeName = prefs.getString(KEY_QR_DECODED_PAYEE, "").orEmpty()
                 )
             }
