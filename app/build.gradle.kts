@@ -10,7 +10,7 @@ plugins {
   
   alias(libs.plugins.google.services)
   alias(libs.plugins.google.crashlytics)
-  // alias(libs.plugins.google.perf)
+  alias(libs.plugins.google.perf)
 }
 
 ksp {
@@ -116,7 +116,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
@@ -158,8 +159,9 @@ dependencies {
   implementation(platform(libs.firebase.bom))
   implementation(libs.firebase.analytics)
   implementation(libs.firebase.crashlytics)
-  // implementation(libs.firebase.perf)
+  implementation(libs.firebase.perf)
   implementation(libs.firebase.appcheck)
+  implementation(libs.zxing.core)
   implementation("com.google.firebase:firebase-database")
   implementation("com.google.firebase:firebase-firestore")
   implementation("com.google.firebase:firebase-storage")

@@ -98,6 +98,20 @@ object CloudLedgerSyncEngine {
     private val flushMutex = Mutex()
     private val reconcileMutex = Mutex()
     private var debounceFlushJob: Job? = null
+    private var debounceSettingsJob: Job? = null
+
+    @Volatile
+    var isApplyingRemoteSettings: Boolean = false
+        private set
+
+    var onRemoteSettingsAppliedCallback: (() -> Unit)? = null
+
+    fun cancelActiveSyncJobs() {
+        debounceFlushJob?.cancel()
+        debounceFlushJob = null
+        debounceSettingsJob?.cancel()
+        debounceSettingsJob = null
+    }
 
     private val _onlinePeerCount = MutableStateFlow(0)
     val onlinePeerCount = _onlinePeerCount.asStateFlow()
@@ -109,6 +123,7 @@ object CloudLedgerSyncEngine {
     val isFetchingPastArchive = _isFetchingPastArchive.asStateFlow()
 
     private var firestoreTriggerListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var firestoreSettingsListener: com.google.firebase.firestore.ListenerRegistration? = null
     private var lastAppliedTriggerTime: Long = 0L
     private var isPresenceInitialized = false
     private var lastPresenceStatusTime = 0L
@@ -314,6 +329,7 @@ object CloudLedgerSyncEngine {
                         }
                     }
                 }
+            attachUserSettingsRealtimeListener(context, onStatusUpdate)
             isPresenceInitialized = true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize Firestore device presence: ${e.message}")
@@ -1015,7 +1031,7 @@ object CloudLedgerSyncEngine {
                     uuid = uuid,
                     lastModified = cloudMod,
                     syncedLastSavedAt = System.currentTimeMillis(),
-                    status = "ACTIVE"
+                    status = status.ifBlank { "ACTIVE" }
                 )
                 dao.insertCustomer(merged)
                 downloadedCount++
@@ -1207,6 +1223,13 @@ object CloudLedgerSyncEngine {
                     archiveSettledLoansOlderThan6Months(context, db)
                 } catch (_: Exception) {}
             }
+        }
+
+        // Reconcile cross-device User Settings, SMS templates, Favorites & UPI QR Code
+        try {
+            reconcileUserSettingsWithFirestore(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "User settings reconciliation notice: ${e.message}")
         }
 
         val finalCustCount = dao.getAllCustomersOnce().size
@@ -1484,4 +1507,463 @@ object CloudLedgerSyncEngine {
             "lastModifiedByUser" to userLoginId
         )
     }
+
+    // =========================================================================
+    // CROSS-DEVICE USER SETTINGS, SMS TEMPLATES, FAVORITES & QR CODE SYNC
+    // =========================================================================
+
+    private const val KEY_SETTINGS_LAST_MODIFIED = "settings_last_modified_ms"
+    private const val KEY_SETTINGS_PENDING_SYNC = "settings_pending_sync"
+    private const val KEY_QR_STORAGE_PATH = "qr_storage_path"
+    private const val KEY_QR_UPDATED_AT = "qr_updated_at_ms"
+    private const val KEY_QR_DECODED_PAYEE = "qr_decoded_payee"
+    private const val KEY_FAVORITE_CUSTOMER_UUIDS = "favorite_customer_uuids"
+
+    private val SUPPORTED_TEMPLATE_LANGUAGES = listOf("English", "Tamil", "Hindi", "Telugu")
+
+    fun getUserSettingsDocKey(context: Context): String {
+        val email = getCurrentUserEmail(context)
+        return if (email.isBlank() || email == "default_shared_ledger") {
+            "global_default"
+        } else {
+            sanitizeGmailKey(email)
+        }
+    }
+
+    /**
+     * Pure LWW conflict resolution helper: returns true if remote settings should overwrite local settings.
+     * Latest modified timestamp wins automatically.
+     */
+    fun shouldApplyRemoteSettings(
+        localLastModified: Long,
+        remoteLastModified: Long,
+        hasLocalPendingSync: Boolean
+    ): Boolean {
+        if (remoteLastModified <= 0L) return false
+        if (remoteLastModified > localLastModified) return true
+        if (!hasLocalPendingSync && localLastModified == 0L) return true
+        return false
+    }
+
+    fun serializeFavoriteUuids(uuids: Set<String>): List<String> {
+        return uuids.map { it.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+
+    fun parseFavoriteUuids(raw: Any?): Set<String> {
+        return when (raw) {
+            is Collection<*> -> raw.mapNotNull { it?.toString()?.trim() }.filter { it.isNotBlank() }.toSet()
+            is String -> {
+                val trimmed = raw.trim()
+                if (trimmed.isEmpty()) {
+                    emptySet()
+                } else if (trimmed.startsWith("[")) {
+                    try {
+                        val arr = JSONArray(trimmed)
+                        val set = mutableSetOf<String>()
+                        for (i in 0 until arr.length()) {
+                            val item = arr.optString(i).trim()
+                            if (item.isNotBlank()) set.add(item)
+                        }
+                        set
+                    } catch (_: Exception) {
+                        trimmed.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+                    }
+                } else {
+                    trimmed.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+                }
+            }
+            else -> emptySet()
+        }
+    }
+
+    fun buildUserSettingsPayloadMap(
+        prefs: android.content.SharedPreferences,
+        deviceId: String,
+        userEmail: String,
+        nowMs: Long
+    ): Map<String, Any> {
+        val favRaw = prefs.getString(KEY_FAVORITE_CUSTOMER_UUIDS, "") ?: ""
+        val favoriteList = serializeFavoriteUuids(parseFavoriteUuids(favRaw))
+
+        val smsTemplatesMap = mutableMapOf<String, String>()
+        for (lang in SUPPORTED_TEMPLATE_LANGUAGES) {
+            val newLoanVal = if (lang == "English" && prefs.contains("sms_new_loan_template")) {
+                prefs.getString("sms_new_loan_template", "") ?: ""
+            } else {
+                prefs.getString("sms_new_loan_template_$lang", "") ?: ""
+            }
+            val payVal = if (lang == "English" && prefs.contains("sms_payment_template")) {
+                prefs.getString("sms_payment_template", "") ?: ""
+            } else {
+                prefs.getString("sms_payment_template_$lang", "") ?: ""
+            }
+            val remVal = if (lang == "English" && prefs.contains("sms_reminder_template")) {
+                prefs.getString("sms_reminder_template", "") ?: ""
+            } else {
+                prefs.getString("sms_reminder_template_$lang", "") ?: ""
+            }
+            val waVal = if (lang == "English" && prefs.contains("whatsapp_reminder_template")) {
+                prefs.getString("whatsapp_reminder_template", "") ?: ""
+            } else {
+                prefs.getString("whatsapp_reminder_template_$lang", "") ?: ""
+            }
+            if (newLoanVal.isNotBlank()) smsTemplatesMap["sms_new_loan_template_$lang"] = newLoanVal
+            if (payVal.isNotBlank()) smsTemplatesMap["sms_payment_template_$lang"] = payVal
+            if (remVal.isNotBlank()) smsTemplatesMap["sms_reminder_template_$lang"] = remVal
+            if (waVal.isNotBlank()) smsTemplatesMap["whatsapp_reminder_template_$lang"] = waVal
+        }
+
+        return mapOf(
+            "businessName" to (prefs.getString("business_name", "MD Finance") ?: "MD Finance"),
+            "customAppName" to (prefs.getString("custom_app_name", "MD Finance") ?: "MD Finance"),
+            "customAppLogo" to (prefs.getString("custom_app_logo", "Default") ?: "Default"),
+            "upiId" to (prefs.getString("upi_id", "9440736893@ptyes") ?: "9440736893@ptyes"),
+            "upiLink" to (prefs.getString("upi_link", "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P") ?: "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P"),
+            "qrStoragePath" to (prefs.getString(KEY_QR_STORAGE_PATH, "") ?: ""),
+            "qrUpdatedAt" to prefs.getLong(KEY_QR_UPDATED_AT, 0L),
+            "qrDecodedPayee" to (prefs.getString(KEY_QR_DECODED_PAYEE, "") ?: ""),
+            "selectedTheme" to (prefs.getString("selected_theme", "Emerald & Royal Slate") ?: "Emerald & Royal Slate"),
+            "fontSizeScale" to prefs.getFloat("font_size_scale", 1.0f).toDouble(),
+            "fontStyleKey" to (prefs.getString("font_style_key", "Inter") ?: "Inter"),
+            "language" to (prefs.getString("language", "English") ?: "English"),
+            "showOverdueDots" to prefs.getBoolean("show_overdue_dots", true),
+            "customerSortMode" to (prefs.getString("customer_sort_mode", "MANUAL") ?: "MANUAL"),
+            "collectionGroups" to (prefs.getString("collection_groups_list", "Monday,Tuesday,Wednesday,Thursday,Saturday,Sunday mrg,Sunday eve") ?: "Monday,Tuesday,Wednesday,Thursday,Saturday,Sunday mrg,Sunday eve"),
+            "smsPaused" to prefs.getBoolean("sms_paused", false),
+            "smsReaderPaused" to prefs.getBoolean("sms_reader_paused", false),
+            "autoEntryPassing" to prefs.getBoolean("auto_entry_passing", true),
+            "upiLinkSharing" to prefs.getBoolean("upi_link_sharing", true),
+            "statementHeaderTitle" to (prefs.getString("statement_header_title", "ACCOUNT STATEMENT") ?: "ACCOUNT STATEMENT"),
+            "statementHeaderSubtitle" to (prefs.getString("statement_header_subtitle", "{business_name}") ?: "{business_name}"),
+            "statementCustomerBoxTemplate" to (prefs.getString("statement_customer_box", "") ?: ""),
+            "statementLoanBoxTemplate" to (prefs.getString("statement_loan_box", "") ?: ""),
+            "statementFooterTemplate" to (prefs.getString("statement_footer_text", "") ?: ""),
+            "statementCustomizationCode" to (prefs.getString("statement_customization_code", "") ?: ""),
+            "favoriteCustomerUuids" to favoriteList,
+            "smsTemplates" to smsTemplatesMap,
+            "lastModified" to nowMs,
+            "lastModifiedFormatted" to formatTimestamp(nowMs),
+            "updatedByDevice" to deviceId,
+            "updatedByUser" to userEmail
+        )
+    }
+
+    /**
+     * Schedules a debounced (1.2s) push of user settings, SMS templates, and favorite customers to Cloud Firestore.
+     */
+    fun scheduleUserSettingsPush(context: Context) {
+        if (isApplyingRemoteSettings) return
+        val appCtx = context.applicationContext
+        val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        prefs.edit()
+            .putLong(KEY_SETTINGS_LAST_MODIFIED, now)
+            .putBoolean(KEY_SETTINGS_PENDING_SYNC, true)
+            .apply()
+
+        debounceSettingsJob?.cancel()
+        debounceSettingsJob = scope.launch {
+            delay(1200L)
+            try {
+                pushUserSettingsToFirestore(appCtx)
+            } catch (e: Exception) {
+                Log.w(TAG, "Debounced settings push queued for retry: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Immediately pushes all user settings, SMS/WhatsApp templates, statement templates, theme,
+     * favorite customer UUIDs, and QR metadata to Cloud Firestore `user_settings/{docKey}` and `user_settings/global_default`.
+     */
+    suspend fun pushUserSettingsToFirestore(context: Context) = withContext(Dispatchers.IO) {
+        ensureFirestoreAuthBestEffort()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val myDeviceId = getDeviceId(context)
+        val email = getCurrentUserEmail(context)
+        val modTime = prefs.getLong(KEY_SETTINGS_LAST_MODIFIED, System.currentTimeMillis()).let {
+            if (it > 0L) it else System.currentTimeMillis()
+        }
+        val payload = buildUserSettingsPayloadMap(prefs, myDeviceId, email, modTime)
+        val firestore = getFirestore()
+        val docKey = getUserSettingsDocKey(context)
+
+        val batch = firestore.batch()
+        batch.set(firestore.collection("user_settings").document("global_default"), payload, SetOptions.merge())
+        if (docKey != "global_default") {
+            batch.set(firestore.collection("user_settings").document(docKey), payload, SetOptions.merge())
+        }
+        Tasks.await(batch.commit(), 8, TimeUnit.SECONDS)
+        prefs.edit().putBoolean(KEY_SETTINGS_PENDING_SYNC, false).apply()
+    }
+
+    /**
+     * Uploads the user's custom UPI QR code PNG file to Firebase Storage and records its storage path,
+     * updated timestamp, and decoded UPI credentials in Cloud Firestore `user_settings` so all peer devices
+     * automatically download and cache the QR code.
+     */
+    fun uploadQrCodeToFirebaseStorage(
+        context: Context,
+        qrFile: java.io.File,
+        decodedUpiId: String,
+        decodedUpiLink: String,
+        decodedPayeeName: String,
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        val appCtx = context.applicationContext
+        scope.launch {
+            try {
+                if (!qrFile.exists() || qrFile.length() <= 0L) {
+                    onComplete(false, "QR image file does not exist")
+                    return@launch
+                }
+                ensureFirestoreAuthBestEffort()
+                val storage = getStorage()
+                val docKey = getUserSettingsDocKey(appCtx)
+                val primaryStoragePath = "upi_qr_codes/$docKey/custom_payment_qr.png"
+                val globalStoragePath = "upi_qr_codes/global_default/custom_payment_qr.png"
+                val bytes = qrFile.readBytes()
+
+                Tasks.await(storage.reference.child(primaryStoragePath).putBytes(bytes), 12, TimeUnit.SECONDS)
+                if (primaryStoragePath != globalStoragePath) {
+                    try {
+                        Tasks.await(storage.reference.child(globalStoragePath).putBytes(bytes), 12, TimeUnit.SECONDS)
+                    } catch (_: Exception) {}
+                }
+
+                val now = System.currentTimeMillis()
+                val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val editor = prefs.edit()
+                    .putString(KEY_QR_STORAGE_PATH, primaryStoragePath)
+                    .putLong(KEY_QR_UPDATED_AT, now)
+                    .putLong(KEY_SETTINGS_LAST_MODIFIED, now)
+                    .putBoolean(KEY_SETTINGS_PENDING_SYNC, true)
+
+                if (decodedUpiId.isNotBlank()) editor.putString("upi_id", decodedUpiId)
+                if (decodedUpiLink.isNotBlank()) editor.putString("upi_link", decodedUpiLink)
+                if (decodedPayeeName.isNotBlank()) editor.putString(KEY_QR_DECODED_PAYEE, decodedPayeeName)
+                editor.apply()
+
+                pushUserSettingsToFirestore(appCtx)
+                onComplete(true, primaryStoragePath)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed uploading QR code to Firebase Storage: ${e.message}")
+                onComplete(false, e.localizedMessage)
+            }
+        }
+    }
+
+    /**
+     * Applies a remote Firestore settings map to local SharedPreferences (with `isApplyingRemoteSettings = true`
+     * to prevent re-triggering an upload loop) and downloads the UPI QR code from Firebase Storage if updated.
+     */
+    fun applyRemoteSettingsMapToPrefs(
+        context: Context,
+        data: Map<String, Any?>,
+        remoteLastModified: Long
+    ) {
+        val appCtx = context.applicationContext
+        val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        isApplyingRemoteSettings = true
+        try {
+            val editor = prefs.edit()
+            (data["businessName"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("business_name", it) }
+            (data["customAppName"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("custom_app_name", it) }
+            (data["customAppLogo"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("custom_app_logo", it) }
+            (data["upiId"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("upi_id", it) }
+            (data["upiLink"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("upi_link", it) }
+            (data["qrDecodedPayee"] as? String)?.let { editor.putString(KEY_QR_DECODED_PAYEE, it) }
+            (data["selectedTheme"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("selected_theme", it) }
+            (data["fontSizeScale"] as? Number)?.toFloat()?.let { editor.putFloat("font_size_scale", it.coerceIn(0.8f, 1.4f)) }
+            (data["fontStyleKey"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("font_style_key", it) }
+            (data["language"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("language", it) }
+            (data["showOverdueDots"] as? Boolean)?.let { editor.putBoolean("show_overdue_dots", it) }
+            (data["customerSortMode"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("customer_sort_mode", it) }
+            (data["collectionGroups"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("collection_groups_list", it) }
+            (data["smsPaused"] as? Boolean)?.let { editor.putBoolean("sms_paused", it) }
+            (data["smsReaderPaused"] as? Boolean)?.let { editor.putBoolean("sms_reader_paused", it) }
+            (data["autoEntryPassing"] as? Boolean)?.let { editor.putBoolean("auto_entry_passing", it) }
+            (data["upiLinkSharing"] as? Boolean)?.let { editor.putBoolean("upi_link_sharing", it) }
+            (data["statementHeaderTitle"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_header_title", it) }
+            (data["statementHeaderSubtitle"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_header_subtitle", it) }
+            (data["statementCustomerBoxTemplate"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_customer_box", it) }
+            (data["statementLoanBoxTemplate"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_loan_box", it) }
+            (data["statementFooterTemplate"] as? String)?.takeIf { it.isNotBlank() }?.let { editor.putString("statement_footer_text", it) }
+            (data["statementCustomizationCode"] as? String)?.let {
+                if (it.isNotBlank()) editor.putString("statement_customization_code", it)
+            }
+
+            if (data.containsKey("favoriteCustomerUuids")) {
+                val favSet = parseFavoriteUuids(data["favoriteCustomerUuids"])
+                val jsonArr = JSONArray()
+                serializeFavoriteUuids(favSet).forEach { jsonArr.put(it) }
+                editor.putString(KEY_FAVORITE_CUSTOMER_UUIDS, jsonArr.toString())
+            }
+
+            val templatesMap = data["smsTemplates"] as? Map<*, *>
+            if (templatesMap != null) {
+                for ((k, v) in templatesMap) {
+                    val keyStr = k?.toString().orEmpty()
+                    val valStr = v?.toString().orEmpty()
+                    if (keyStr.isNotBlank() && valStr.isNotBlank()) {
+                        editor.putString(keyStr, valStr)
+                        if (keyStr == "sms_new_loan_template_English") editor.putString("sms_new_loan_template", valStr)
+                        if (keyStr == "sms_payment_template_English") editor.putString("sms_payment_template", valStr)
+                        if (keyStr == "sms_reminder_template_English") editor.putString("sms_reminder_template", valStr)
+                        if (keyStr == "whatsapp_reminder_template_English") editor.putString("whatsapp_reminder_template", valStr)
+                    }
+                }
+            }
+
+            editor.putLong(KEY_SETTINGS_LAST_MODIFIED, remoteLastModified)
+            editor.putBoolean(KEY_SETTINGS_PENDING_SYNC, false)
+            editor.commit()
+        } finally {
+            isApplyingRemoteSettings = false
+        }
+
+        onRemoteSettingsAppliedCallback?.invoke()
+
+        // Check if remote UPI QR code image in Firebase Storage needs to be downloaded
+        val remoteQrPath = (data["qrStoragePath"] as? String).orEmpty()
+        val remoteQrUpdatedAt = (data["qrUpdatedAt"] as? Number)?.toLong() ?: 0L
+        val localQrUpdatedAt = prefs.getLong(KEY_QR_UPDATED_AT, 0L)
+        val localQrFile = java.io.File(appCtx.filesDir, "custom_payment_qr.png")
+
+        if (remoteQrPath.isNotBlank() && (remoteQrUpdatedAt > localQrUpdatedAt || !localQrFile.exists())) {
+            scope.launch {
+                downloadQrCodeFromFirebaseStorage(appCtx, remoteQrPath, remoteQrUpdatedAt)
+            }
+        }
+    }
+
+    private suspend fun downloadQrCodeFromFirebaseStorage(
+        context: Context,
+        storagePath: String,
+        remoteQrUpdatedAt: Long
+    ) = withContext(Dispatchers.IO) {
+        try {
+            ensureFirestoreAuthBestEffort()
+            val storage = getStorage()
+            val bytes = Tasks.await(
+                storage.reference.child(storagePath).getBytes(2L * 1024L * 1024L),
+                12,
+                TimeUnit.SECONDS
+            )
+            if (bytes != null && bytes.isNotEmpty()) {
+                val filesTarget = java.io.File(context.filesDir, "custom_payment_qr.png")
+                filesTarget.writeBytes(bytes)
+                val cacheTarget = java.io.File(context.cacheDir, "custom_payment_qr.png")
+                cacheTarget.writeBytes(bytes)
+
+                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                isApplyingRemoteSettings = true
+                try {
+                    prefs.edit()
+                        .putString(KEY_QR_STORAGE_PATH, storagePath)
+                        .putLong(KEY_QR_UPDATED_AT, remoteQrUpdatedAt)
+                        .putString("qr_image_uri", android.net.Uri.fromFile(filesTarget).toString())
+                        .commit()
+                } finally {
+                    isApplyingRemoteSettings = false
+                }
+                onRemoteSettingsAppliedCallback?.invoke()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed downloading QR code from Firebase Storage ($storagePath): ${e.message}")
+        }
+    }
+
+    private fun attachUserSettingsRealtimeListener(
+        context: Context,
+        onStatusUpdate: (String) -> Unit = {}
+    ) {
+        try {
+            val appCtx = context.applicationContext
+            val firestore = getFirestore()
+            val myDeviceId = getDeviceId(appCtx)
+            firestoreSettingsListener?.remove()
+            firestoreSettingsListener = firestore.collection("user_settings")
+                .document("global_default")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    val updatedByDevice = snapshot.getString("updatedByDevice").orEmpty()
+                    val remoteLastModified = snapshot.getLong("lastModified") ?: 0L
+                    if (updatedByDevice == myDeviceId) return@addSnapshotListener
+
+                    val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    val localLastModified = prefs.getLong(KEY_SETTINGS_LAST_MODIFIED, 0L)
+                    val hasPending = prefs.getBoolean(KEY_SETTINGS_PENDING_SYNC, false)
+
+                    if (shouldApplyRemoteSettings(localLastModified, remoteLastModified, hasPending)) {
+                        val map = snapshot.data ?: return@addSnapshotListener
+                        applyRemoteSettingsMapToPrefs(appCtx, map, remoteLastModified)
+                        onStatusUpdate("Synced app settings & templates from Cloud")
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed attaching user_settings listener: ${e.message}")
+        }
+    }
+
+    /**
+     * Reconciles local vs. cloud `user_settings` using Latest Modified Timestamp Wins (`lastModified`).
+     */
+    suspend fun reconcileUserSettingsWithFirestore(context: Context) = withContext(Dispatchers.IO) {
+        val appCtx = context.applicationContext
+        val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val firestore = getFirestore()
+        val docKey = getUserSettingsDocKey(appCtx)
+
+        val globalSnap = try {
+            Tasks.await(firestore.collection("user_settings").document("global_default").get(), 6, TimeUnit.SECONDS)
+        } catch (_: Exception) {
+            null
+        }
+        val userSnap = if (docKey != "global_default") {
+            try {
+                Tasks.await(firestore.collection("user_settings").document(docKey).get(), 6, TimeUnit.SECONDS)
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+
+        val bestSnap = listOfNotNull(globalSnap, userSnap)
+            .filter { it.exists() }
+            .maxByOrNull { it.getLong("lastModified") ?: 0L }
+
+        val localLastModified = prefs.getLong(KEY_SETTINGS_LAST_MODIFIED, 0L)
+        val hasLocalPending = prefs.getBoolean(KEY_SETTINGS_PENDING_SYNC, false)
+
+        if (bestSnap == null || !bestSnap.exists()) {
+            // No cloud settings yet — seed Firestore with current device settings
+            if (localLastModified == 0L) {
+                prefs.edit().putLong(KEY_SETTINGS_LAST_MODIFIED, System.currentTimeMillis()).apply()
+            }
+            pushUserSettingsToFirestore(appCtx)
+            // Also upload existing local QR file to Firebase Storage if not uploaded yet
+            val existingQrFile = java.io.File(appCtx.filesDir, "custom_payment_qr.png")
+            val existingQrStoragePath = prefs.getString(KEY_QR_STORAGE_PATH, "").orEmpty()
+            if (existingQrFile.exists() && existingQrStoragePath.isBlank()) {
+                uploadQrCodeToFirebaseStorage(
+                    context = appCtx,
+                    qrFile = existingQrFile,
+                    decodedUpiId = prefs.getString("upi_id", "").orEmpty(),
+                    decodedUpiLink = prefs.getString("upi_link", "").orEmpty(),
+                    decodedPayeeName = prefs.getString(KEY_QR_DECODED_PAYEE, "").orEmpty()
+                )
+            }
+            return@withContext
+        }
+
+        val remoteMod = bestSnap.getLong("lastModified") ?: 0L
+        if (shouldApplyRemoteSettings(localLastModified, remoteMod, hasLocalPending)) {
+            bestSnap.data?.let { data ->
+                applyRemoteSettingsMapToPrefs(appCtx, data, remoteMod)
+            }
+        } else if (hasLocalPending || localLastModified > remoteMod) {
+            pushUserSettingsToFirestore(appCtx)
+        }
+    }
 }
+

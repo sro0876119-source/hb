@@ -161,6 +161,19 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                             )
                         }
 
+                        val badDebtCustomers by viewModel.badDebtCustomers.collectAsStateWithLifecycle()
+                        AnimatedSlideInItem(index = 1) {
+                            SettingsMenuCard(
+                                title = "${translate("Bad Debts (NPA Quarantine)", language)} (${badDebtCustomers.size})",
+                                subtitle = translate("Quarantined accounts, principal & interest loss dashboard, and account revival", language),
+                                icon = Icons.Default.ReportProblem,
+                                iconTint = Color(0xFFDC2626),
+                                iconBgColor = Color(0xFFFEE2E2),
+                                onClick = { viewModel.setSettingsSubPage("bad_debts") },
+                                testTag = "settings_bad_debts_btn"
+                            )
+                        }
+
                         // Group 2: Automation & Messaging
                         Text(translate("Automation & Messaging", language), fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF64748B), modifier = Modifier.padding(top = 16.dp, bottom = 4.dp, start = 4.dp))
 
@@ -236,8 +249,8 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
 
                         AnimatedSlideInItem(index = 6) {
                             SettingsMenuCard(
-                                title = translate("App Font Size Option", language),
-                                subtitle = translate("Normal, Medium, Large, Extra Large text choices", language),
+                                title = translate("App Theme, Font Size & Style", language),
+                                subtitle = translate("3 Pro Color Palettes, font styles & text size scale", language),
                                 iconBgColor = Color(0xFFF1F5F9),
                                 customIcon = {
                                     Row(
@@ -627,6 +640,14 @@ fun SettingsScreen(viewModel: FinanceViewModel) {
                 }
                 "contacts_sync" -> {
                     GoogleContactsSyncSubPage(
+                        language = language,
+                        viewModel = viewModel,
+                        appColors = appColors,
+                        context = context
+                    )
+                }
+                "bad_debts" -> {
+                    BadDebtsSubPage(
                         language = language,
                         viewModel = viewModel,
                         appColors = appColors,

@@ -11,7 +11,7 @@ import kotlinx.coroutines.withContext
 class AppUpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         Log.i("AppUpdateWorker", "Starting periodic background update check...")
-        return withContext(Dispatchers.Main) {
+        return withContext(Dispatchers.IO) {
             try {
                 FirebaseUpdateManager.checkForCloudUpdates(applicationContext)
                 Result.success()

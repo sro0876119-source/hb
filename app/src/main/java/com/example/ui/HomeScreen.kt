@@ -705,7 +705,7 @@ fun DashboardScreen(viewModel: FinanceViewModel) {
                                         val balance = totalAmt - activeLoan.paidAmount
                                         if (balance <= 0.0) return@any false
                                         
-                                        val loanHasPayment = allPayments.any { 
+                                        val loanHasPayment = activeLoan.id in viewModel.loanIdsWithRecentPayments.value || allPayments.any { 
                                             it.loanCycleId == activeLoan.id && 
                                             it.paymentDate >= twoDaysAgoStart && 
                                             it.status.uppercase() != "DELETED" && 
@@ -2638,7 +2638,7 @@ fun StatsReportingCard(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .threeDDepthCard(elevation = 4.dp, shape = RoundedCornerShape(12.dp))
-                                .background(Color(0xFF8B5CF6), RoundedCornerShape(12.dp))
+                                .background(appColors.deductionsBg, RoundedCornerShape(12.dp))
                                 .threeDPressable(enabled = onCardClick != null) { onCardClick?.invoke("DEDUCTIONS") }
                                 .padding(horizontal = 12.dp, vertical = 9.dp)
                                 .testTag("stats_card_deductions_btn"),
@@ -2818,11 +2818,13 @@ fun CustomerOverviewCard(
         }
     }
 
+    val loanIdsWithRecentPayments by viewModel.loanIdsWithRecentPayments.collectAsStateWithLifecycle()
+
     Card(
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = appColors.cardBg),
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, appColors.primaryAccent.copy(alpha = 0.15f)),
+        border = BorderStroke(1.dp, appColors.cardBorder),
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 96.dp)
@@ -2884,7 +2886,7 @@ fun CustomerOverviewCard(
                         text = item.customer.name,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = ColorSlateDark,
+                        color = appColors.textPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -2893,14 +2895,14 @@ fun CustomerOverviewCard(
                         Spacer(modifier = Modifier.width(8.dp))
                         Box(
                             modifier = Modifier
-                                .background(Color(0xFFE2E8F0), RoundedCornerShape(4.dp))
+                                .background(appColors.cardBorder, RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
                                 text = item.customer.city,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = ColorSlateDark,
+                                color = appColors.textPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -2914,11 +2916,11 @@ fun CustomerOverviewCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (item.customer.phone.isNotBlank()) {
-                        Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(10.dp), tint = Color.Black)
+                        Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(10.dp), tint = appColors.textSecondary)
                         Text(
                             text = if (item.customer.phone2.isNotBlank()) "${item.customer.phone}, ${item.customer.phone2}" else item.customer.phone,
                             fontSize = 12.sp,
-                            color = Color.Black,
+                            color = appColors.textSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -2999,20 +3001,8 @@ fun CustomerOverviewCard(
                                 
                                 val todayPaidAmt = item.todaysPayments[activeLoan.id]
 
-                                val actualHasPaymentInPast2Days = remember(allPaymentsList, activeLoan.id) {
-                                    val midnightToday = Calendar.getInstance().apply {
-                                        set(Calendar.HOUR_OF_DAY, 0)
-                                        set(Calendar.MINUTE, 0)
-                                        set(Calendar.SECOND, 0)
-                                        set(Calendar.MILLISECOND, 0)
-                                    }.timeInMillis
-                                    val twoDaysAgoStart = midnightToday - java.util.concurrent.TimeUnit.DAYS.toMillis(2)
-                                    allPaymentsList.any {
-                                        it.loanCycleId == activeLoan.id &&
-                                        it.paymentDate >= twoDaysAgoStart &&
-                                        it.status.uppercase() != "DELETED" &&
-                                        it.amountPaid > 0.0
-                                    }
+                                val actualHasPaymentInPast2Days = remember(loanIdsWithRecentPayments, activeLoan.id, hasPaymentInPast2Days) {
+                                    hasPaymentInPast2Days ?: (activeLoan.id in loanIdsWithRecentPayments)
                                 }
 
                                 val customerDayOfWeek = when {
@@ -3689,15 +3679,21 @@ fun getOverviewListForDay(
     allLoanCycles: List<LoanCycle>,
     allPayments: List<WeeklyPayment>,
     search: String,
-    sortMode: String
+    sortMode: String,
+    onlyBadDebts: Boolean = false
 ): List<CustomerCollectionItem> {
     val cleanQuery = search.trim()
     val isSearching = cleanQuery.isNotEmpty()
 
+    val statusFilteredCustomers = allCustomers.filter { customer ->
+        val isBadDebt = customer.status.equals("BAD_DEBT", ignoreCase = true)
+        if (onlyBadDebts) isBadDebt else !isBadDebt
+    }
+
     val filteredByDay = if (day.equals("Home", ignoreCase = true) || day.equals("ALL", ignoreCase = true)) {
-        allCustomers.filter { !it.collectionDay.trim().equals("Friday", ignoreCase = true) }
+        statusFilteredCustomers.filter { !it.collectionDay.trim().equals("Friday", ignoreCase = true) }
     } else {
-        allCustomers.filter { 
+        statusFilteredCustomers.filter { 
             !it.collectionDay.trim().equals("Friday", ignoreCase = true) &&
             it.collectionDay.trim().equals(day.trim(), ignoreCase = true) 
         }

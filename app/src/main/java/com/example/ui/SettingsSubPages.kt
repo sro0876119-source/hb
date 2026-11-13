@@ -45,10 +45,16 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.input.key.*
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import com.example.network.FirebaseUpdateManager
 import com.example.network.UpdateStatus
 import com.example.data.DatabaseProvider
 import com.example.util.CsvBackupHelper
+import com.example.util.CurrencyFormatter
+import com.example.util.MoneyMath
+import com.example.util.UpiQrCodeHelper
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
@@ -141,7 +147,160 @@ fun FontSizeSubPage(
     val subTextColor = if (isDark) Color(0xFF94A3B8) else Color.DarkGray
     val activeFontFamily = com.example.ui.theme.getAppFontFamily(fontStyleKey)
 
+    val selectedTheme by viewModel.selectedTheme.collectAsStateWithLifecycle()
+
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        // Section 0: 3 Pro Color Theme Palettes
+        Card(
+            colors = CardDefaults.cardColors(containerColor = cardBg),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, cardBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = translate("Pro Color Theme Palettes", language),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = appColors.primaryAccent
+                )
+                Text(
+                    text = translate("Choose a field-tested color theme optimized for readability, contrast, and battery life.", language),
+                    fontSize = 11.sp,
+                    color = subTextColor
+                )
+
+                data class ThemeOptionSpec(
+                    val key: String,
+                    val title: String,
+                    val subtitle: String,
+                    val swatches: List<Pair<String, Color>>
+                )
+
+                val themeOptions = listOf(
+                    ThemeOptionSpec(
+                        key = "Fintech Emerald",
+                        title = "Option 1: \"Fintech Emerald & Royal Slate\" 🏆 (Recommended)",
+                        subtitle = "Inspired by Stripe & Mercury Bank — modern, clean, trustworthy, and ultra-crisp.",
+                        swatches = listOf(
+                            "Header" to Color(0xFF0F172A),
+                            "Collect" to Color(0xFF059669),
+                            "Disburse" to Color(0xFF2563EB),
+                            "Profit" to Color(0xFF4F46E5),
+                            "Deduct" to Color(0xFF9333EA),
+                            "Alert" to Color(0xFFDC2626)
+                        )
+                    ),
+                    ThemeOptionSpec(
+                        key = "Sunlight Contrast",
+                        title = "Option 2: \"Outdoor Sunlight High-Contrast\" ☀️ (Best for Direct Sun & Glare)",
+                        subtitle = "Engineered for maximum legibility outdoors on a bike in bright afternoon sun.",
+                        swatches = listOf(
+                            "Header" to Color(0xFF020617),
+                            "Collect" to Color(0xFF15803D),
+                            "Disburse" to Color(0xFF1D4ED8),
+                            "Profit" to Color(0xFFB45309),
+                            "Deduct" to Color(0xFF7E22CE),
+                            "Alert" to Color(0xFFB91C1C)
+                        )
+                    ),
+                    ThemeOptionSpec(
+                        key = "Midnight AMOLED",
+                        title = "Option 3: \"Midnight AMOLED / Stealth OLED\" 🌙 (Night & Battery Saver)",
+                        subtitle = "Saves OLED battery and looks sleek during evening/Sunday eve collections.",
+                        swatches = listOf(
+                            "Header" to Color(0xFF090D16),
+                            "Card" to Color(0xFF1E293B),
+                            "Collect" to Color(0xFF10B981),
+                            "Disburse" to Color(0xFF38BDF8),
+                            "Profit" to Color(0xFFFBBF24),
+                            "Deduct" to Color(0xFFC084FC)
+                        )
+                    )
+                )
+
+                themeOptions.forEach { spec ->
+                    val isSel = selectedTheme.equals(spec.key, ignoreCase = true) ||
+                        (spec.key == "Fintech Emerald" && (selectedTheme == "Emerald Green" || selectedTheme == "Royal Blue"))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                color = if (isSel) appColors.primaryAccent.copy(alpha = 0.08f) else Color.Transparent,
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                            .border(
+                                width = if (isSel) 2.dp else 1.dp,
+                                color = if (isSel) appColors.primaryAccent else cardBorder,
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                            .clickable { viewModel.setSelectedTheme(spec.key) }
+                            .padding(12.dp)
+                            .testTag("theme_palette_${spec.key.lowercase(Locale.US).replace(" ", "_")}"),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = spec.title,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = textColor
+                                )
+                                Text(
+                                    text = spec.subtitle,
+                                    fontSize = 10.5.sp,
+                                    color = subTextColor,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                            RadioButton(
+                                selected = isSel,
+                                onClick = { viewModel.setSelectedTheme(spec.key) },
+                                colors = RadioButtonDefaults.colors(selectedColor = appColors.primaryAccent)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            spec.swatches.forEach { (roleName, swatchColor) ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier
+                                        .background(
+                                            if (isDark) Color(0xFF0F172A) else Color(0xFFF8FAFC),
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .border(1.dp, cardBorder, RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .background(swatchColor, CircleShape)
+                                    )
+                                    Text(
+                                        text = roleName,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = textColor
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Section 1: Font Style Choice
         Card(
             colors = CardDefaults.cardColors(containerColor = cardBg),
@@ -659,6 +818,111 @@ fun BusinessUpiSubPage(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(8.dp)
             )
+
+            // Merchant UPI Payment Link
+            OutlinedTextField(
+                value = upiLink,
+                onValueChange = { viewModel.setUpiLink(it) },
+                label = { Text("Merchant UPI Deep Link (Auto-filled from QR upload)", fontSize = 11.sp) },
+                placeholder = { Text("Example: upi://pay?pa=9440736893@ptyes&pn=MD%20Finance", fontSize = 11.sp) },
+                singleLine = true,
+                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp, color = Color.Black),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.Black,
+                    unfocusedTextColor = Color.Black,
+                    focusedLabelColor = Color.Black,
+                    unfocusedLabelColor = Color.Black,
+                    focusedBorderColor = ColorSlateDark,
+                    unfocusedBorderColor = Color(0xFFCBD5E1)
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            )
+
+            HorizontalDivider(color = Color(0xFFE2E8F0))
+
+            // UPI QR Code Upload & Reader Section
+            val context = LocalContext.current
+            val savedQrBitmap = remember(qrImageUri) {
+                UpiQrCodeHelper.loadSavedQrBitmap(context)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        text = translate("UPI QR Code for Account Statements", language),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = ColorSlateDark
+                    )
+                    Text(
+                        text = translate("Upload your GPay / PhonePe / Paytm QR image. We automatically decode the UPI ID & payment link and print the QR in the top-right corner of every customer statement with 'Scan and Pay' below it.", language),
+                        fontSize = 11.sp,
+                        color = Color.DarkGray,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = { qrPickerLauncher.launch("image/*") },
+                        colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("upload_upi_qr_button")
+                    ) {
+                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (savedQrBitmap != null) translate("Change UPI QR Code", language) else translate("Upload UPI QR Code", language),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+
+                // Live Preview of Top-Right Statement "Scan and Pay" QR Box
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
+                        .border(1.dp, Color(0xFF334155), RoundedCornerShape(12.dp))
+                        .padding(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(78.dp)
+                            .background(Color.White, RoundedCornerShape(8.dp))
+                            .padding(4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (savedQrBitmap != null) {
+                            Image(
+                                bitmap = savedQrBitmap.asImageBitmap(),
+                                contentDescription = "Saved UPI QR Code",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.QrCode2,
+                                contentDescription = "QR Placeholder",
+                                tint = Color(0xFF0F172A),
+                                modifier = Modifier.size(52.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Scan and Pay",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White
+                    )
+                }
+            }
         }
     }
 }
@@ -3430,66 +3694,114 @@ fun StatementTemplateSubPage(
                     .testTag("virtual_statement_preview_card")
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    // 1. Dark Header Banner (Tap to edit Header Heading or Sub-Heading)
-                    Column(
+                    // 1. Dark Header Banner (Tap to edit Header Heading or Sub-Heading + Top-Right Scan and Pay QR)
+                    val previewContext = LocalContext.current
+                    val qrImageUri by viewModel.qrImageUri.collectAsStateWithLifecycle()
+                    val previewQrBitmap = remember(qrImageUri) {
+                        UpiQrCodeHelper.loadSavedQrBitmap(previewContext)
+                    }
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(Color(0xFF0F172A))
-                            .padding(vertical = 12.dp, horizontal = 14.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                            .padding(vertical = 12.dp, horizontal = 12.dp)
                     ) {
-                        Box(
+                        Column(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(
-                                    if (activeSectionIndex == 0) Color(0xFF4F46E5).copy(alpha = 0.35f) else Color.Transparent
-                                )
-                                .border(
-                                    width = if (activeSectionIndex == 0) 1.dp else 0.dp,
-                                    color = if (activeSectionIndex == 0) Color(0xFF818CF8) else Color.Transparent,
-                                    shape = RoundedCornerShape(6.dp)
-                                )
-                                .clickable { activeSectionIndex = 0 }
-                                .padding(horizontal = 10.dp, vertical = 2.dp)
+                                .fillMaxWidth()
+                                .padding(end = 68.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(
+                                        if (activeSectionIndex == 0) Color(0xFF4F46E5).copy(alpha = 0.35f) else Color.Transparent
+                                    )
+                                    .border(
+                                        width = if (activeSectionIndex == 0) 1.dp else 0.dp,
+                                        color = if (activeSectionIndex == 0) Color(0xFF818CF8) else Color.Transparent,
+                                        shape = RoundedCornerShape(6.dp)
+                                    )
+                                    .clickable { activeSectionIndex = 0 }
+                                    .padding(horizontal = 10.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = resolvedHeaderTitle.uppercase(),
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(
+                                        if (activeSectionIndex == 1) Color(0xFF4F46E5).copy(alpha = 0.35f) else Color.Transparent
+                                    )
+                                    .border(
+                                        width = if (activeSectionIndex == 1) 1.dp else 0.dp,
+                                        color = if (activeSectionIndex == 1) Color(0xFF818CF8) else Color.Transparent,
+                                        shape = RoundedCornerShape(6.dp)
+                                    )
+                                    .clickable { activeSectionIndex = 1 }
+                                    .padding(horizontal = 10.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = resolvedHeaderSubtitle.uppercase(),
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+
                             Text(
-                                text = resolvedHeaderTitle.uppercase(),
-                                color = Color.White,
-                                fontSize = 16.sp,
+                                text = "Generated on: ${SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date())}",
+                                color = Color(0xFF64748B),
+                                fontSize = 9.sp
+                            )
+                        }
+
+                        // Top-Right Corner: Saved QR Code + "Scan and Pay"
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.align(Alignment.CenterEnd)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(Color.White, RoundedCornerShape(6.dp))
+                                    .padding(3.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (previewQrBitmap != null) {
+                                    Image(
+                                        bitmap = previewQrBitmap.asImageBitmap(),
+                                        contentDescription = "Statement QR Preview",
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.QrCode2,
+                                        contentDescription = "Scan and Pay QR",
+                                        tint = Color(0xFF0F172A),
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Scan and Pay",
+                                fontSize = 7.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                textAlign = TextAlign.Center
+                                color = Color.White
                             )
                         }
-
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(
-                                    if (activeSectionIndex == 1) Color(0xFF4F46E5).copy(alpha = 0.35f) else Color.Transparent
-                                )
-                                .border(
-                                    width = if (activeSectionIndex == 1) 1.dp else 0.dp,
-                                    color = if (activeSectionIndex == 1) Color(0xFF818CF8) else Color.Transparent,
-                                    shape = RoundedCornerShape(6.dp)
-                                )
-                                .clickable { activeSectionIndex = 1 }
-                                .padding(horizontal = 10.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = resolvedHeaderSubtitle.uppercase(),
-                                color = Color(0xFF94A3B8),
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-
-                        Text(
-                            text = "Generated on: ${SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date())}",
-                            color = Color(0xFF64748B),
-                            fontSize = 9.sp
-                        )
                     }
 
                     // 2. Side-by-Side Customer Details Box & Loan Summary Box
@@ -4216,6 +4528,457 @@ fun AutomationSubPage(
                     onCheckedChange = { viewModel.setSmsPaused(!it) },
                     colors = SwitchDefaults.colors(checkedThumbColor = ColorSlateDark, checkedTrackColor = ColorSlateDark.copy(alpha = 0.4f))
                 )
+            }
+        }
+    }
+}
+
+// ==========================================
+// 12. BadDebtsSubPage (NPA Quarantine Hub)
+// ==========================================
+@Composable
+fun BadDebtsSubPage(
+    language: String,
+    viewModel: FinanceViewModel,
+    appColors: AppThemeColors,
+    context: Context
+) {
+    val badDebtCustomers by viewModel.badDebtCustomers.collectAsStateWithLifecycle()
+    val allLoanCycles by viewModel.allLoanCycles.collectAsStateWithLifecycle()
+    val allPayments by viewModel.allPayments.collectAsStateWithLifecycle()
+    val collectionGroups by viewModel.collectionGroups.collectAsStateWithLifecycle()
+    val currentUserRole by viewModel.currentUserRole.collectAsStateWithLifecycle()
+
+    val validDayTabs = remember(collectionGroups) {
+        val defaultDays = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Saturday", "Sunday mrg", "Sunday eve")
+        val dynamic = collectionGroups.map { it.trim() }.filter {
+            it.isNotBlank() &&
+                !it.equals("Friday", ignoreCase = true) &&
+                !it.equals("Sunday", ignoreCase = true) &&
+                !it.equals("Home", ignoreCase = true)
+        }
+        listOf("All") + (defaultDays + dynamic).distinctBy { it.lowercase(Locale.US) }
+    }
+
+    var selectedDayFilter by rememberSaveable { mutableStateOf("All") }
+
+    val filteredCustomers = remember(badDebtCustomers, selectedDayFilter) {
+        if (selectedDayFilter.equals("All", ignoreCase = true)) {
+            badDebtCustomers.sortedWith(compareBy<com.example.data.Customer> { it.collectionDay }.thenBy { it.customOrder })
+        } else {
+            badDebtCustomers.filter {
+                it.collectionDay.trim().equals(selectedDayFilter.trim(), ignoreCase = true)
+            }.sortedBy { it.customOrder }
+        }
+    }
+
+    // Calculate Principal Loss, Interest Loss, and Total Loss across filtered Bad Debt customers
+    val lossMetrics = remember(filteredCustomers, allLoanCycles, allPayments) {
+        var totalPrincipalLoss = 0.0
+        var totalInterestLoss = 0.0
+        var totalLoss = 0.0
+
+        val customerIdSet = filteredCustomers.map { it.id }.toSet()
+        val relevantLoans = allLoanCycles.filter {
+            it.customerId in customerIdSet &&
+                it.status.uppercase(Locale.US) != "DELETED"
+        }
+
+        relevantLoans.forEach { loan ->
+            val livePaid = allPayments
+                .filter { it.loanCycleId == loan.id && it.status.uppercase(Locale.US) != "DELETED" }
+                .sumOf { it.amountPaid }
+            val (pLoss, iLoss, tLoss) = MoneyMath.calculateBadDebtLossBreakdown(
+                principalAmount = loan.loanAmount,
+                interestAmount = loan.interestAmount,
+                paidAmount = livePaid
+            )
+            totalPrincipalLoss = MoneyMath.add(totalPrincipalLoss, pLoss)
+            totalInterestLoss = MoneyMath.add(totalInterestLoss, iLoss)
+            totalLoss = MoneyMath.add(totalLoss, tLoss)
+        }
+
+        Triple(totalPrincipalLoss, totalInterestLoss, totalLoss)
+    }
+
+    val (principalLoss, interestLoss, totalCombinedLoss) = lossMetrics
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // 1. Same Day-Group Navigation Bar as Home (All, Monday, Tuesday, Wednesday, Thursday, Saturday, Sunday mrg, Sunday eve)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            validDayTabs.forEach { dayTab ->
+                val isSelected = selectedDayFilter.equals(dayTab, ignoreCase = true)
+                val countForDay = remember(badDebtCustomers, dayTab) {
+                    if (dayTab.equals("All", ignoreCase = true)) badDebtCustomers.size
+                    else badDebtCustomers.count { it.collectionDay.trim().equals(dayTab.trim(), ignoreCase = true) }
+                }
+                Surface(
+                    onClick = { selectedDayFilter = dayTab },
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (isSelected) Color(0xFFDC2626) else appColors.cardBg,
+                    border = BorderStroke(
+                        width = if (isSelected) 1.5.dp else 1.dp,
+                        color = if (isSelected) Color(0xFFDC2626) else appColors.cardBorder
+                    ),
+                    modifier = Modifier.testTag("bad_debt_day_tab_${dayTab.lowercase(Locale.US).replace(" ", "_")}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = translate(dayTab, language),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSelected) Color.White else appColors.textPrimary
+                        )
+                        if (countForDay > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        if (isSelected) Color.White.copy(alpha = 0.22f) else Color(0xFFFEE2E2),
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = "$countForDay",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (isSelected) Color.White else Color(0xFFDC2626)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Mini Loss Dashboard (Principal Loss, Interest Loss, Total Loss)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, Color(0xFFDC2626).copy(alpha = 0.5f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("bad_debts_mini_dashboard")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ReportProblem,
+                            contentDescription = null,
+                            tint = Color(0xFFF87171),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "NPA QUARANTINE LOSS DASHBOARD (${selectedDayFilter.uppercase(Locale.US)})",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White
+                        )
+                    }
+                    Text(
+                        text = "${filteredCustomers.size} Account(s)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFFCA5A5)
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Principal Loss Box
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(Color(0xFF1E293B), RoundedCornerShape(12.dp))
+                            .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = translate("Principal Loss", language),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF94A3B8)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "₹${CurrencyFormatter.format(principalLoss)}",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFFF87171)
+                        )
+                    }
+
+                    // Interest Loss Box
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(Color(0xFF1E293B), RoundedCornerShape(12.dp))
+                            .border(1.dp, Color(0xFFF59E0B).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = translate("Interest Loss", language),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF94A3B8)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "₹${CurrencyFormatter.format(interestLoss)}",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFFFBBF24)
+                        )
+                    }
+
+                    // Total Loss Box
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(Color(0xFF7F1D1D).copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                            .border(1.dp, Color(0xFFEF4444), RoundedCornerShape(12.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = translate("Total Loss", language),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFFECACA)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "₹${CurrencyFormatter.format(totalCombinedLoss)}",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        // 3. Quarantined Customer Cards List
+        if (filteredCustomers.isEmpty()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = appColors.cardBg),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, appColors.cardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VerifiedUser,
+                        contentDescription = null,
+                        tint = Color(0xFF059669),
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Text(
+                        text = translate("No Bad Debt Accounts in $selectedDayFilter", language),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = appColors.textPrimary
+                    )
+                    Text(
+                        text = translate("Quarantined NPA accounts moved from Customer Dashboard 3-dots will appear here.", language),
+                        fontSize = 11.sp,
+                        color = appColors.textSecondary,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            filteredCustomers.forEach { customer ->
+                val customerLoans = remember(allLoanCycles, customer.id) {
+                    allLoanCycles.filter {
+                        it.customerId == customer.id && it.status.uppercase(Locale.US) != "DELETED"
+                    }
+                }
+                var custPrincipalLoss = 0.0
+                var custInterestLoss = 0.0
+                var custTotalLoss = 0.0
+                var custTotalPaid = 0.0
+
+                customerLoans.forEach { loan ->
+                    val paid = allPayments
+                        .filter { it.loanCycleId == loan.id && it.status.uppercase(Locale.US) != "DELETED" }
+                        .sumOf { it.amountPaid }
+                    custTotalPaid = MoneyMath.add(custTotalPaid, paid)
+                    val (pL, iL, tL) = MoneyMath.calculateBadDebtLossBreakdown(
+                        principalAmount = loan.loanAmount,
+                        interestAmount = loan.interestAmount,
+                        paidAmount = paid
+                    )
+                    custPrincipalLoss = MoneyMath.add(custPrincipalLoss, pL)
+                    custInterestLoss = MoneyMath.add(custInterestLoss, iL)
+                    custTotalLoss = MoneyMath.add(custTotalLoss, tL)
+                }
+
+                Card(
+                    onClick = { viewModel.navigateTo(Screen.CustomerDetail(customer.id)) },
+                    colors = CardDefaults.cardColors(containerColor = appColors.cardBg),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("bad_debt_customer_card_${customer.id}")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = customer.name,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 15.sp,
+                                        color = appColors.textPrimary
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .background(Color(0xFFFEF2F2), RoundedCornerShape(6.dp))
+                                            .border(1.dp, Color(0xFFDC2626).copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = "SUSPENDED",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFFDC2626)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "Day: ${customer.collectionDay} • Ph: ${customer.phone.ifBlank { "N/A" }} • Loans: ${customerLoans.size}",
+                                    fontSize = 11.sp,
+                                    color = appColors.textSecondary,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+
+                            if (currentUserRole != "USER") {
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.reviveCustomerFromBadDebts(customer.id) {
+                                            Toast.makeText(
+                                                context,
+                                                "${customer.name} revived to ${customer.collectionDay}!",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    },
+                                    border = BorderStroke(1.dp, Color(0xFF059669)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.testTag("revive_customer_btn_${customer.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Restore,
+                                        contentDescription = "Revive Customer",
+                                        tint = Color(0xFF059669),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = translate("Revive", language),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF059669)
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = appColors.cardBorder)
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text("Principal Loss", fontSize = 10.sp, color = appColors.textSecondary)
+                                Text(
+                                    text = "₹${CurrencyFormatter.format(custPrincipalLoss)}",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFDC2626)
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Interest Loss", fontSize = 10.sp, color = appColors.textSecondary)
+                                Text(
+                                    text = "₹${CurrencyFormatter.format(custInterestLoss)}",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFD97706)
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Recovered", fontSize = 10.sp, color = appColors.textSecondary)
+                                Text(
+                                    text = "₹${CurrencyFormatter.format(custTotalPaid)}",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF059669)
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("Total Unpaid Loss", fontSize = 10.sp, color = appColors.textSecondary)
+                                Text(
+                                    text = "₹${CurrencyFormatter.format(custTotalLoss)}",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFFDC2626)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

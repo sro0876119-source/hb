@@ -307,9 +307,16 @@ interface CollectionDao {
             val target = cycle.loanAmount + cycle.interestAmount
             val isPaid = totalPaid >= target
             
+            val preservedStatus = if (cycle.status.equals("SUSPENDED", ignoreCase = true) && !isPaid) {
+                "SUSPENDED"
+            } else if (isPaid) {
+                "PAID"
+            } else {
+                "ACTIVE"
+            }
             val updatedCycle = cycle.copy(
                 paidAmount = totalPaid,
-                status = if (isPaid) "PAID" else "ACTIVE",
+                status = preservedStatus,
                 lastModified = System.currentTimeMillis()
             )
             updateLoanCycle(updatedCycle)
@@ -351,42 +358,4 @@ interface CollectionDao {
 
     @Query("DELETE FROM cash_balance_logs")
     suspend fun deleteAllCashBalanceLogs()
-
-    // Microfinance Customers Queries
-    @Query("SELECT * FROM microfinance_customers ORDER BY name ASC")
-    fun getAllCustomerEntities(): Flow<List<CustomerEntity>>
-
-    @Query("SELECT * FROM microfinance_customers WHERE id = :id")
-    suspend fun getCustomerEntityById(id: Int): CustomerEntity?
-
-    @Query("SELECT * FROM microfinance_customers")
-    suspend fun getAllCustomerEntitiesList(): List<CustomerEntity>
-
-    @Query("SELECT * FROM microfinance_customers WHERE route = :routeDay")
-    fun filterCustomerEntitiesByRoute(routeDay: String): Flow<List<CustomerEntity>>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertCustomerEntity(customer: CustomerEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertCustomerEntities(customers: List<CustomerEntity>)
-
-    @Delete
-    suspend fun deleteCustomerEntity(customer: CustomerEntity)
-
-    // Microfinance Transactions Queries
-    @Query("SELECT * FROM microfinance_transactions WHERE customerId = :id")
-    suspend fun getTransactionsByCustomerId(id: Int): List<TransactionEntity>
-
-    @Query("SELECT * FROM microfinance_transactions ORDER BY date DESC")
-    fun getTransactionHistories(): Flow<List<TransactionEntity>>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTransactionEntity(transaction: TransactionEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTransactionEntities(transactions: List<TransactionEntity>)
-
-    @Delete
-    suspend fun deleteTransactionEntity(transaction: TransactionEntity)
 }

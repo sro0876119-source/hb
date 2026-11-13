@@ -10,7 +10,7 @@ object OnlineTimeHelper {
     private const val NTP_PORT = 123
     private const val NTP_PACKET_SIZE = 48
     private const val NTP_MODE_CLIENT = 3
-    private const val NTP_VERSION = 3
+    private const val NTP_VERSION = 4
     private const val OFFSET_1900_TO_1970 = 2208988800L
     private const val TRANSMIT_TIME_OFFSET = 40
 

@@ -147,7 +147,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val _isDemoMode = MutableStateFlow(prefs.getBoolean("is_demo_mode", false))
     val isDemoMode = _isDemoMode.asStateFlow()
 
-    private val _currentUser = MutableStateFlow(if (bypassLogin) com.example.util.SecureConfig.adminUsername.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() } else (prefs.getString("current_user", "") ?: ""))
+    private val _currentUser = MutableStateFlow(prefs.getString("current_user", "") ?: "")
     val currentUser = _currentUser.asStateFlow()
 
     private val _currentUserRole = MutableStateFlow("ADMIN")
@@ -169,7 +169,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val _isLoadingUsers = MutableStateFlow(false)
     val isLoadingUsers = _isLoadingUsers.asStateFlow()
 
-    private val _username = MutableStateFlow(if (bypassLogin) com.example.util.SecureConfig.adminUsername.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() } else (prefs.getString("current_user", "Device User") ?: "Device User"))
+    private val _username = MutableStateFlow(prefs.getString("current_user", "Device User")?.ifBlank { "Device User" } ?: "Device User")
     val username = _username.asStateFlow()
 
     private val _deviceId = MutableStateFlow(
@@ -566,12 +566,18 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         val activePaymentsByLoan = payments.filter { it.status.uppercase() != "DELETED" }.groupBy { it.loanCycleId }
         loans.filter { it.status.uppercase() != "DELETED" }.map { loan ->
             val rawPaid = activePaymentsByLoan[loan.id]?.sumOf { if (it.amountPaid.isFinite()) it.amountPaid else 0.0 } ?: 0.0
-            val actualPaid = if (rawPaid.isFinite()) rawPaid else 0.0
+            val actualPaid = if (rawPaid.isFinite()) com.example.util.MoneyMath.round(rawPaid) else 0.0
             val safeLoanAmt = if (loan.loanAmount.isFinite()) loan.loanAmount else 0.0
             val safeInterest = if (loan.interestAmount.isFinite()) loan.interestAmount else 0.0
             val safeWeekly = if (loan.weeklyAmount.isFinite()) loan.weeklyAmount else 0.0
-            val totalToBePaid = safeLoanAmt + safeInterest
-            val liveStatus = if (totalToBePaid > 0.0 && actualPaid >= totalToBePaid) "PAID" else "ACTIVE"
+            val totalToBePaid = com.example.util.MoneyMath.add(safeLoanAmt, safeInterest)
+            val upperStatus = loan.status.trim().uppercase(Locale.US)
+            val liveStatus = when {
+                totalToBePaid > 0.0 && actualPaid >= totalToBePaid -> "PAID"
+                upperStatus == "SUSPENDED" || upperStatus == "BAD_DEBT" -> "SUSPENDED"
+                upperStatus == "PAID" || upperStatus == "CLOSED" -> "PAID"
+                else -> "ACTIVE"
+            }
             loan.copy(
                 loanAmount = safeLoanAmt,
                 interestAmount = safeInterest,
@@ -592,6 +598,33 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     val allPayments: StateFlow<List<WeeklyPayment>> = repository.allPayments
         .catch { e -> e.printStackTrace(); emit(emptyList()) }
         .map { list -> list.filter { it.status.uppercase() != "DELETED" && it.amountPaid.isFinite() } }
+        .flowOn(kotlinx.coroutines.Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * O(1) lookup set of loanCycleIds that have received a payment within the 2-day attention window
+     * (today, yesterday, or 2 days ago) so HomeScreen never scans allPayments per customer card.
+     */
+    val loanIdsWithRecentPayments: StateFlow<Set<Int>> = allPayments
+        .map { payments ->
+            val cal = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+                add(Calendar.DAY_OF_YEAR, -2)
+            }
+            val cutoffMs = cal.timeInMillis
+            payments.asSequence()
+                .filter { it.paymentDate >= cutoffMs && it.amountPaid > 0.0 }
+                .map { it.loanCycleId }
+                .toSet()
+        }
+        .flowOn(kotlinx.coroutines.Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    val badDebtCustomers: StateFlow<List<Customer>> = allCustomers
+        .map { list -> list.filter { it.status.equals("BAD_DEBT", ignoreCase = true) } }
         .flowOn(kotlinx.coroutines.Dispatchers.IO)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -767,7 +800,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private val _fontStyleKey = MutableStateFlow(prefs.getString("font_style_key", "SANS_SERIF") ?: "SANS_SERIF")
     val fontStyleKey = _fontStyleKey.asStateFlow()
 
-    private val _selectedTheme = MutableStateFlow("Sleek Slate")
+    private val _selectedTheme = MutableStateFlow(
+        run {
+            val saved = prefs.getString("selected_theme", "Fintech Emerald") ?: "Fintech Emerald"
+            if (saved == "Sleek Slate") "Fintech Emerald" else saved
+        }
+    )
     val selectedTheme = _selectedTheme.asStateFlow()
 
     private val _customAppName = MutableStateFlow(prefs.getString("custom_app_name", "MD Finance") ?: "MD Finance")
@@ -1530,12 +1568,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         _syncPaused.value = savedSyncPaused
         
         val savedIsLoggedIn = if (bypassLogin) true else prefs.getBoolean("is_logged_in", false)
-        val savedUser = if (bypassLogin) com.example.util.SecureConfig.adminUsername.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() } else (prefs.getString("current_user", "") ?: "")
+        val savedUser = prefs.getString("current_user", "") ?: ""
         val savedRole = "ADMIN"
 
         _isLoggedIn.value = savedIsLoggedIn
         _currentUser.value = savedUser
-        _username.value = savedUser
+        _username.value = savedUser.ifBlank { "Device User" }
         _currentUserRole.value = savedRole
         _hasCompletedDeviceSetup.value = true
         repository.deviceUsername = savedUser
@@ -1547,6 +1585,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         _unsyncedLogCount.value = 0
 
         registerNetworkCallback()
+        com.example.network.CloudLedgerSyncEngine.onRemoteSettingsAppliedCallback = {
+            refreshAllSettingsFromPrefs()
+        }
         signInFirebaseAnonymouslySilently()
         startFirebaseSyncListening()
         viewModelScope.launch {
@@ -1578,6 +1619,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         super.onCleared()
+        if (com.example.network.CloudLedgerSyncEngine.onRemoteSettingsAppliedCallback != null) {
+            com.example.network.CloudLedgerSyncEngine.onRemoteSettingsAppliedCallback = null
+        }
         prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener)
         try {
             connectivityCallback?.let { callback ->
@@ -1589,13 +1633,92 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private val _favoriteCustomerUuids = MutableStateFlow(
+        com.example.network.CloudLedgerSyncEngine.parseFavoriteUuids(
+            prefs.getString("favorite_customer_uuids", "") ?: ""
+        )
+    )
+    val favoriteCustomerUuids: StateFlow<Set<String>> = _favoriteCustomerUuids.asStateFlow()
 
+    fun isCustomerFavorite(customerUuid: String): Boolean {
+        return customerUuid.isNotBlank() && _favoriteCustomerUuids.value.contains(customerUuid)
+    }
 
+    fun toggleFavoriteCustomer(customerUuid: String) {
+        if (customerUuid.isBlank()) return
+        val updated = _favoriteCustomerUuids.value.toMutableSet()
+        if (updated.contains(customerUuid)) {
+            updated.remove(customerUuid)
+        } else {
+            updated.add(customerUuid)
+        }
+        _favoriteCustomerUuids.value = updated
+        val arr = org.json.JSONArray()
+        com.example.network.CloudLedgerSyncEngine.serializeFavoriteUuids(updated).forEach { arr.put(it) }
+        prefs.edit().putString("favorite_customer_uuids", arr.toString()).apply()
+        markDirty()
+    }
 
+    fun refreshAllSettingsFromPrefs() {
+        try {
+            _businessName.value = prefs.getString("business_name", "MD Finance") ?: "MD Finance"
+            _customAppName.value = prefs.getString("custom_app_name", "MD Finance") ?: "MD Finance"
+            _customAppLogo.value = prefs.getString("custom_app_logo", "Default") ?: "Default"
+            _upiId.value = prefs.getString("upi_id", "9440736893@ptyes") ?: "9440736893@ptyes"
+            _upiLink.value = prefs.getString("upi_link", "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P") ?: "upi://pay?pa=9440736893@ptyes&pn=Muneeswaran%20P"
+            val savedQrFile = java.io.File(getApplication<Application>().filesDir, "custom_payment_qr.png")
+            if (savedQrFile.exists()) {
+                _qrImageUri.value = android.net.Uri.fromFile(savedQrFile).toString()
+            } else {
+                _qrImageUri.value = prefs.getString("qr_image_uri", "") ?: ""
+            }
+            _selectedTheme.value = prefs.getString("selected_theme", "Emerald & Royal Slate") ?: "Emerald & Royal Slate"
+            _fontSizeScale.value = prefs.getFloat("font_size_scale", 1.0f)
+            _fontStyleKey.value = prefs.getString("font_style_key", "Inter") ?: "Inter"
+            _language.value = prefs.getString("language", "English") ?: "English"
+            _showOverdueDots.value = prefs.getBoolean("show_overdue_dots", true)
+            _customerSortMode.value = prefs.getString("customer_sort_mode", "MANUAL") ?: "MANUAL"
+            _smsPaused.value = prefs.getBoolean("sms_paused", false)
+            _smsReaderPaused.value = prefs.getBoolean("sms_reader_paused", false)
+            _autoEntryPassing.value = prefs.getBoolean("auto_entry_passing", true)
+            _upiLinkSharing.value = prefs.getBoolean("upi_link_sharing", true)
+            _statementHeaderTitle.value = prefs.getString("statement_header_title", defaultStatementHeaderTitle) ?: defaultStatementHeaderTitle
+            _statementHeaderSubtitle.value = prefs.getString("statement_header_subtitle", defaultStatementHeaderSubtitle) ?: defaultStatementHeaderSubtitle
+            _statementCustomerBoxTemplate.value = prefs.getString("statement_customer_box", defaultStatementCustomerBox) ?: defaultStatementCustomerBox
+            _statementLoanBoxTemplate.value = prefs.getString("statement_loan_box", defaultStatementLoanBox) ?: defaultStatementLoanBox
+            _statementFooterTemplate.value = prefs.getString("statement_footer_text", defaultStatementFooter) ?: defaultStatementFooter
+            _statementCustomizationCode.value = prefs.getString("statement_customization_code", _statementCustomizationCode.value) ?: _statementCustomizationCode.value
+
+            val refreshedGroupsStr = prefs.getString("collection_groups_list", defaultGroups) ?: defaultGroups
+            val refreshedList = refreshedGroupsStr
+                .replace("Sunday Morning", "Sunday mrg")
+                .replace("Sunday Evening", "Sunday eve")
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !it.equals("Friday", ignoreCase = true) }
+                .distinct()
+            if (refreshedList.isNotEmpty()) {
+                _collectionGroups.value = refreshedList
+            }
+
+            val lang = _currentTemplateLanguage.value
+            _smsNewLoanTemplate.value = getSmsNewLoanTemplate(lang)
+            _smsPaymentTemplate.value = getSmsPaymentTemplate(lang)
+            _smsReminderTemplate.value = getSmsReminderTemplate(lang)
+            _whatsappReminderTemplate.value = getWhatsappReminderTemplate(lang)
+
+            _favoriteCustomerUuids.value = com.example.network.CloudLedgerSyncEngine.parseFavoriteUuids(
+                prefs.getString("favorite_customer_uuids", "") ?: ""
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 
     fun markDirty() {
-        // Entity deltas are already queued & debounced via pushFirebaseEditLog -> CloudLedgerSyncEngine.enqueueOfflineOrLiveEdit.
-        // Avoid triggering redundant full-database flushes on local Room emissions or preference toggles.
+        if (isRestoringFromJson || _isDemoMode.value || _offlineModeEnabled.value) return
+        if (com.example.network.CloudLedgerSyncEngine.isApplyingRemoteSettings) return
+        com.example.network.CloudLedgerSyncEngine.scheduleUserSettingsPush(getApplication())
     }
 
     // Settings setters
@@ -1678,7 +1801,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         val safeInterest = if (loan.interestAmount.isFinite()) loan.interestAmount else 0.0
                         val safeWeekly = if (loan.weeklyAmount.isFinite()) loan.weeklyAmount else 0.0
                         val targetAmount = safeLoanAmt + safeInterest
-                        val computedStatus = if ((targetAmount > 0.0 && sumPaid >= targetAmount) || loan.notes.startsWith("COMPACT_6M|")) "PAID" else "ACTIVE"
+                        val isSuspended = loan.status.equals("SUSPENDED", ignoreCase = true) || loan.status.equals("BAD_DEBT", ignoreCase = true)
+                        val computedStatus = when {
+                            (targetAmount > 0.0 && sumPaid >= targetAmount) || loan.notes.startsWith("COMPACT_6M|") -> "PAID"
+                            isSuspended -> "SUSPENDED"
+                            else -> "ACTIVE"
+                        }
 
                         var updatedNotes = loan.notes
                         if (computedStatus == "PAID" && !loan.notes.startsWith("COMPACT_6M|")) {
@@ -1747,7 +1875,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         val safeLoanAmt = if (loan.loanAmount.isFinite()) loan.loanAmount else 0.0
                         val safeInterest = if (loan.interestAmount.isFinite()) loan.interestAmount else 0.0
                         val targetAmount = safeLoanAmt + safeInterest
-                        val computedStatus = if (targetAmount > 0.0 && sumPaid >= targetAmount) "PAID" else "ACTIVE"
+                        val isSuspended = loan.status.equals("SUSPENDED", ignoreCase = true) || loan.status.equals("BAD_DEBT", ignoreCase = true)
+                        val computedStatus = when {
+                            targetAmount > 0.0 && sumPaid >= targetAmount -> "PAID"
+                            isSuspended -> "SUSPENDED"
+                            else -> "ACTIVE"
+                        }
                         if (loan.paidAmount != sumPaid || loan.status != computedStatus) {
                             db.collectionDao().updateLoanCycle(
                                 loan.copy(paidAmount = sumPaid, status = computedStatus)
@@ -2075,9 +2208,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
         if (cleanUser.lowercase(Locale.US) == "demo") {
             completeLoginSession("Demo", "demo@app.com", "ADMIN", onSuccess)
-        } else if (cleanUser.lowercase(Locale.US) == com.example.util.SecureConfig.adminUsername && password == com.example.util.SecureConfig.adminPassword) {
-            val capUsername = com.example.util.SecureConfig.adminUsername.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
-            completeLoginSession(capUsername, "muneeswaran45@gmail.com", "ADMIN", onSuccess)
         } else {
             loginWithFirebaseAuth(cleanUser, password, onSuccess, onError)
         }
@@ -2915,24 +3045,66 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     fun saveSelectedQrCode(uri: Uri) {
         val appCtx = getApplication<Application>()
-        try {
-            val cacheFile = java.io.File(appCtx.cacheDir, "custom_payment_qr.png")
-            appCtx.contentResolver.openInputStream(uri)?.use { input ->
-                cacheFile.outputStream().use { output ->
-                    input.copyTo(output)
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val (savedFile, decodedUpi) = com.example.util.UpiQrCodeHelper.saveAndDecodeQrFromUri(appCtx, uri)
+                val targetFile = savedFile ?: run {
+                    val fallbackFile = java.io.File(appCtx.filesDir, com.example.util.UpiQrCodeHelper.SAVED_QR_FILENAME)
+                    appCtx.contentResolver.openInputStream(uri)?.use { input ->
+                        fallbackFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    fallbackFile
                 }
-            }
-            val providerUri = androidx.core.content.FileProvider.getUriForFile(
-                appCtx, "${appCtx.packageName}.fileprovider", cacheFile
-            )
-            val uriStr = providerUri.toString()
-            _qrImageUri.value = uriStr
-            prefs.edit().putString("qr_image_uri", uriStr).apply()
-            markDirty()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                android.widget.Toast.makeText(appCtx, "Failed to save QR Code: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+
+                // Also copy to cacheDir so FileProvider sharing works seamlessly
+                val cacheFile = java.io.File(appCtx.cacheDir, com.example.util.UpiQrCodeHelper.SAVED_QR_FILENAME)
+                targetFile.copyTo(cacheFile, overwrite = true)
+                val providerUri = androidx.core.content.FileProvider.getUriForFile(
+                    appCtx, "${appCtx.packageName}.fileprovider", cacheFile
+                )
+                val uriStr = providerUri.toString()
+                _qrImageUri.value = uriStr
+                val edit = prefs.edit().putString("qr_image_uri", uriStr)
+
+                if (decodedUpi != null) {
+                    if (decodedUpi.upiId.isNotBlank()) {
+                        _upiId.value = decodedUpi.upiId
+                        edit.putString("upi_id", decodedUpi.upiId)
+                    }
+                    if (decodedUpi.upiUri.isNotBlank()) {
+                        _upiLink.value = decodedUpi.upiUri
+                        edit.putString("upi_link", decodedUpi.upiUri)
+                    }
+                    if (decodedUpi.payeeName.isNotBlank()) {
+                        edit.putString("qr_decoded_payee", decodedUpi.payeeName)
+                    }
+                }
+                edit.apply()
+
+                // Upload QR code PNG to Firebase Storage and sync decoded QR/UPI details in Firestore
+                com.example.network.CloudLedgerSyncEngine.uploadQrCodeToFirebaseStorage(
+                    context = appCtx,
+                    qrFile = targetFile,
+                    decodedUpiId = decodedUpi?.upiId ?: _upiId.value,
+                    decodedUpiLink = decodedUpi?.upiUri ?: _upiLink.value,
+                    decodedPayeeName = decodedUpi?.payeeName.orEmpty()
+                )
+                markDirty()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    val msg = if (decodedUpi != null && decodedUpi.upiId.isNotBlank()) {
+                        "QR Code saved, synced to Cloud & UPI ID (${decodedUpi.upiId}) mapped!"
+                    } else {
+                        "QR Code saved & synced to Cloud Storage!"
+                    }
+                    android.widget.Toast.makeText(appCtx, msg, android.widget.Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.widget.Toast.makeText(appCtx, "Failed to save QR Code: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -3044,8 +3216,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setSelectedTheme(theme: String) {
-        _selectedTheme.value = "Sleek Slate"
-        prefs.edit().putString("selected_theme", "Sleek Slate").apply()
+        val resolved = if (theme.isBlank() || theme == "Sleek Slate") "Fintech Emerald" else theme
+        _selectedTheme.value = resolved
+        prefs.edit().putString("selected_theme", resolved).apply()
         markDirty()
     }
 
@@ -3423,7 +3596,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         updateCollectionGroups(defaults.split(","))
         setSmsPaused(false)
         setFontSizeScale(1.0f)
-        setSelectedTheme("Sleek Slate")
+        setSelectedTheme("Fintech Emerald")
     }
 
     fun clearAllDatabaseData() {
@@ -3482,10 +3655,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         val search = array[5] as String
         val sortMode = array[6] as String
 
+        val activeCustomersOnly = customers.filter { !it.status.equals("BAD_DEBT", ignoreCase = true) }
         val filteredByDay = if (day.equals("Home", ignoreCase = true)) {
-            customers
+            activeCustomersOnly
         } else {
-            customers.filter { it.collectionDay.equals(day, ignoreCase = true) }
+            activeCustomersOnly.filter { it.collectionDay.equals(day, ignoreCase = true) }
         }
         
         // Sort by customOrder
@@ -4102,14 +4276,15 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     put("payments", paymentsArr)
                 }
 
-                val deletedCustomer = customer.copy(status = "DELETED")
+                val deletedCustomer = customer.copy(status = "DELETED", lastModified = System.currentTimeMillis())
                 repository.updateCustomer(deletedCustomer)
                 loans.forEach { l ->
-                    repository.updateLoanCycle(l.copy(status = "DELETED"))
+                    repository.updateLoanCycle(l.copy(status = "DELETED", lastModified = System.currentTimeMillis()))
                 }
                 payments.forEach { p ->
-                    repository.insertWeeklyPayment(p.copy(status = "DELETED"))
+                    repository.insertWeeklyPayment(p.copy(status = "DELETED", lastModified = System.currentTimeMillis()))
                 }
+                compactDayGroupOrderInternal(customer.collectionDay, excludeCustomerId = customer.id)
                 if (!isSyncingFromFirebase) {
                     val pLoad = org.json.JSONObject().apply {
                         put("customerUuid", customer.uuid)
@@ -4137,6 +4312,280 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
                 else -> {}
+            }
+        }
+    }
+
+    /**
+     * Re-sequences active customers (excluding DELETED and BAD_DEBT) in a day group
+     * to 1, 2, 3... so route numbers have zero gaps after a customer is deleted, moved to Bad Debts,
+     * or transferred to another day.
+     */
+    private suspend fun compactDayGroupOrderInternal(dayGroup: String, excludeCustomerId: Int = -1) {
+        val allInDb = db.collectionDao().getAllCustomersOnce()
+        val remainingActiveInDay = allInDb.filter {
+            it.id != excludeCustomerId &&
+                it.status.uppercase(Locale.US) != "DELETED" &&
+                !it.status.equals("BAD_DEBT", ignoreCase = true) &&
+                it.collectionDay.trim().equals(dayGroup.trim(), ignoreCase = true)
+        }.sortedWith(compareBy<Customer> { it.customOrder }.thenBy { it.id })
+
+        remainingActiveInDay.forEachIndexed { idx, member ->
+            val newRouteOrder = idx + 1
+            if (member.customOrder != newRouteOrder) {
+                val updatedMember = member.copy(
+                    customOrder = newRouteOrder,
+                    lastModified = System.currentTimeMillis()
+                )
+                repository.updateCustomer(updatedMember)
+                if (!isSyncingFromFirebase) {
+                    pushFirebaseEditLog("EDIT_CUSTOMER", customerToJson(updatedMember), "", updatedMember.uuid)
+                }
+            }
+        }
+    }
+
+    /**
+     * Moves a customer to Bad Debts (NPA Quarantine):
+     * - Sets customer.status = "BAD_DEBT"
+     * - Freezes active loans as "SUSPENDED"
+     * - Removes customer from active daily route and reassigns route IDs (1..N) to subsequent members in that day group
+     * - Excludes their amounts from active Home Dashboard metrics
+     */
+    fun moveCustomerToBadDebts(customerId: Int, onComplete: () -> Unit = {}) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val customer = repository.getCustomerById(customerId) ?: return@launch
+                val previousJson = customerToJson(customer)
+                val now = System.currentTimeMillis()
+                val quarantinedCustomer = customer.copy(
+                    status = "BAD_DEBT",
+                    lastModified = now
+                )
+                repository.updateCustomer(quarantinedCustomer)
+                if (!isSyncingFromFirebase) {
+                    pushFirebaseEditLog("EDIT_CUSTOMER", customerToJson(quarantinedCustomer), previousJson, quarantinedCustomer.uuid)
+                }
+
+                // Freeze active loans as SUSPENDED
+                val customerLoans = db.collectionDao().getAllLoanCyclesOnce().filter {
+                    it.customerId == customerId && it.status.uppercase(Locale.US) != "DELETED"
+                }
+                for (loan in customerLoans) {
+                    val totalTarget = com.example.util.MoneyMath.add(loan.loanAmount, loan.interestAmount)
+                    if (loan.status.equals("ACTIVE", ignoreCase = true) && loan.paidAmount < totalTarget) {
+                        val prevLoanJson = loanCycleToJson(loan)
+                        val suspendedLoan = loan.copy(
+                            status = "SUSPENDED",
+                            lastModified = now
+                        )
+                        repository.updateLoanCycle(suspendedLoan)
+                        if (!isSyncingFromFirebase) {
+                            pushFirebaseEditLog("EDIT_LOAN", loanCycleToJson(suspendedLoan), prevLoanJson, suspendedLoan.uuid)
+                        }
+                    }
+                }
+
+                // Reassign route numbers for remaining active members in that day group
+                compactDayGroupOrderInternal(customer.collectionDay, excludeCustomerId = customer.id)
+
+                repository.addEditLog(
+                    EditLog(
+                        customerId = customer.id,
+                        customerName = customer.name,
+                        actionType = "EDIT_CUSTOMER",
+                        actionDescription = "Moved ${customer.name} (${customer.collectionDay}, Route #${customer.customOrder}) to Bad Debts (NPA Quarantine) and reassigned route numbers",
+                        previousDataJson = previousJson
+                    )
+                )
+                markDirty()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        getApplication(),
+                        "Moved '${customer.name}' to Bad Debts & reassigned route order",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    onComplete()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /**
+     * Revives a customer from Bad Debts back to their active daily collection route:
+     * - Restores customer.status = "ACTIVE"
+     * - Assigns next sequential route order in their collectionDay
+     * - Restores any SUSPENDED loans with unpaid balance back to "ACTIVE"
+     */
+    fun reviveCustomerFromBadDebts(customerId: Int, onComplete: () -> Unit = {}) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val customer = repository.getCustomerById(customerId) ?: return@launch
+                val previousJson = customerToJson(customer)
+                val now = System.currentTimeMillis()
+                val activeInDay = db.collectionDao().getAllCustomersOnce().filter {
+                    it.id != customerId &&
+                        it.status.uppercase(Locale.US) != "DELETED" &&
+                        !it.status.equals("BAD_DEBT", ignoreCase = true) &&
+                        it.collectionDay.trim().equals(customer.collectionDay.trim(), ignoreCase = true)
+                }
+                val nextOrder = activeInDay.size + 1
+
+                val revivedCustomer = customer.copy(
+                    status = "ACTIVE",
+                    customOrder = nextOrder,
+                    lastModified = now
+                )
+                repository.updateCustomer(revivedCustomer)
+                if (!isSyncingFromFirebase) {
+                    pushFirebaseEditLog("EDIT_CUSTOMER", customerToJson(revivedCustomer), previousJson, revivedCustomer.uuid)
+                }
+
+                // Restore SUSPENDED loans that still have remaining balance back to ACTIVE
+                val customerLoans = db.collectionDao().getAllLoanCyclesOnce().filter {
+                    it.customerId == customerId && it.status.uppercase(Locale.US) != "DELETED"
+                }
+                for (loan in customerLoans) {
+                    val totalTarget = com.example.util.MoneyMath.add(loan.loanAmount, loan.interestAmount)
+                    if (loan.status.equals("SUSPENDED", ignoreCase = true)) {
+                        val prevLoanJson = loanCycleToJson(loan)
+                        val newLoanStatus = if (totalTarget > 0.0 && loan.paidAmount >= totalTarget) "PAID" else "ACTIVE"
+                        val restoredLoan = loan.copy(
+                            status = newLoanStatus,
+                            lastModified = now
+                        )
+                        repository.updateLoanCycle(restoredLoan)
+                        if (!isSyncingFromFirebase) {
+                            pushFirebaseEditLog("EDIT_LOAN", loanCycleToJson(restoredLoan), prevLoanJson, restoredLoan.uuid)
+                        }
+                    }
+                }
+
+                compactDayGroupOrderInternal(customer.collectionDay)
+
+                repository.addEditLog(
+                    EditLog(
+                        customerId = customer.id,
+                        customerName = customer.name,
+                        actionType = "EDIT_CUSTOMER",
+                        actionDescription = "Revived ${customer.name} from Bad Debts back to ${customer.collectionDay} active route (#$nextOrder)",
+                        previousDataJson = previousJson
+                    )
+                )
+                markDirty()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        getApplication(),
+                        "Revived '${customer.name}' back to ${customer.collectionDay} route!",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    onComplete()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /**
+     * Moves a customer from their current collection day to another collection day,
+     * compacting route numbers in the old day group and appending to the target day group.
+     */
+    fun moveCustomerToDayGroup(customerId: Int, targetDay: String, onComplete: () -> Unit = {}) {
+        val cleanTarget = targetDay.trim()
+        if (cleanTarget.isBlank() || cleanTarget.equals("Friday", ignoreCase = true)) return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val customer = repository.getCustomerById(customerId) ?: return@launch
+                val oldDay = customer.collectionDay
+                if (oldDay.trim().equals(cleanTarget, ignoreCase = true)) return@launch
+
+                val previousJson = customerToJson(customer)
+                val allInDb = db.collectionDao().getAllCustomersOnce()
+                val activeInTargetDay = allInDb.filter {
+                    it.id != customerId &&
+                        it.status.uppercase(Locale.US) != "DELETED" &&
+                        !it.status.equals("BAD_DEBT", ignoreCase = true) &&
+                        it.collectionDay.trim().equals(cleanTarget, ignoreCase = true)
+                }
+                val newOrderInTarget = activeInTargetDay.size + 1
+                val updatedCustomer = customer.copy(
+                    collectionDay = cleanTarget,
+                    customOrder = newOrderInTarget,
+                    lastModified = System.currentTimeMillis()
+                )
+                repository.updateCustomer(updatedCustomer)
+                if (!isSyncingFromFirebase) {
+                    pushFirebaseEditLog("EDIT_CUSTOMER", customerToJson(updatedCustomer), previousJson, updatedCustomer.uuid)
+                }
+
+                // Compact route numbers in both old and new day groups
+                compactDayGroupOrderInternal(oldDay, excludeCustomerId = customerId)
+                compactDayGroupOrderInternal(cleanTarget)
+
+                repository.addEditLog(
+                    EditLog(
+                        customerId = customer.id,
+                        customerName = customer.name,
+                        actionType = "EDIT_CUSTOMER",
+                        actionDescription = "Moved ${customer.name} from $oldDay to $cleanTarget (Route #$newOrderInTarget)",
+                        previousDataJson = previousJson
+                    )
+                )
+                createOrUpdateCustomerFiles(customerId)
+                markDirty()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        getApplication(),
+                        "Moved '${customer.name}' from $oldDay to $cleanTarget",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    onComplete()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /**
+     * Updates an individual loan cycle's status ("ACTIVE", "PAID", or "SUSPENDED")
+     * and syncs with Cloud Firestore and Audit Logs.
+     */
+    fun updateLoanCycleStatus(loanCycleId: Int, targetStatus: String) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val loan = repository.getLoanCycleById(loanCycleId) ?: return@launch
+                val previousJson = loanCycleToJson(loan)
+                val normalized = when (targetStatus.trim().uppercase(Locale.US)) {
+                    "CLOSED", "PAID" -> "PAID"
+                    "SUSPENDED", "BAD_DEBT" -> "SUSPENDED"
+                    else -> "ACTIVE"
+                }
+                val updatedLoan = loan.copy(
+                    status = normalized,
+                    lastModified = System.currentTimeMillis()
+                )
+                repository.updateLoanCycle(updatedLoan)
+                if (!isSyncingFromFirebase) {
+                    pushFirebaseEditLog("EDIT_LOAN", loanCycleToJson(updatedLoan), previousJson, updatedLoan.uuid)
+                }
+                val customer = repository.getCustomerById(loan.customerId)
+                val displayLabel = com.example.util.StatementGenerator.resolveDisplayLoanStatus(normalized, normalized == "PAID")
+                repository.addEditLog(
+                    EditLog(
+                        customerId = loan.customerId,
+                        customerName = customer?.name ?: "Customer",
+                        actionType = "EDIT_LOAN",
+                        actionDescription = "Changed loan (₹${loan.loanAmount}) status to $displayLabel for ${customer?.name ?: "Customer"}",
+                        previousDataJson = previousJson
+                    )
+                )
+                markDirty()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
@@ -4814,10 +5263,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         
         val resultMap = mutableMapOf<String, DashboardStats>()
         
-        val activeCustomerIds = customers.map { it.id }.toSet()
-        val filteredLoans = allLoans.filter { it.customerId in activeCustomerIds && it.status.uppercase() != "DELETED" }
+        val activeCustomersOnly = customers.filter { !it.status.equals("BAD_DEBT", ignoreCase = true) }
+        val activeCustomerIds = activeCustomersOnly.map { it.id }.toSet()
+        val filteredLoans = allLoans.filter { it.customerId in activeCustomerIds && it.status.uppercase() != "DELETED" && !it.status.equals("SUSPENDED", ignoreCase = true) }
         val loanMap = filteredLoans.associateBy { it.id }
-        val filteredActiveLoans = activeLoans.filter { it.customerId in activeCustomerIds && it.status.uppercase() != "DELETED" }
+        val filteredActiveLoans = activeLoans.filter { it.customerId in activeCustomerIds && it.status.uppercase() != "DELETED" && !it.status.equals("SUSPENDED", ignoreCase = true) }
         val filteredPayments = payments.filter { p ->
             loanMap.containsKey(p.loanCycleId) && p.status.uppercase() != "DELETED"
         }
@@ -4843,9 +5293,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             .sumOf { p ->
                 val loan = loanMap[p.loanCycleId]
                 if (loan != null) {
-                    val total = loan.loanAmount + loan.interestAmount
-                    val ratio = if (total > 0.0) loan.interestAmount / total else 0.0
-                    p.amountPaid * ratio
+                    com.example.util.MoneyMath.realizedInterestShare(p.amountPaid, loan.loanAmount, loan.interestAmount)
                 } else {
                     0.0
                 }
@@ -4863,7 +5311,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
         for (day in daysToCompute) {
             val isAllDays = day.equals("Home", ignoreCase = true)
-            val groupCustomers = if (isAllDays) customers else customers.filter { it.collectionDay.equals(day, ignoreCase = true) }
+            val groupCustomers = if (isAllDays) activeCustomersOnly else activeCustomersOnly.filter { it.collectionDay.equals(day, ignoreCase = true) }
             val groupCustomerIds = groupCustomers.map { it.id }.toSet()
             
             val groupActiveLoans = activeLoansMapped.filter { it.customerId in groupCustomerIds }
@@ -4905,9 +5353,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 .sumOf { p ->
                     val loan = loanMap[p.loanCycleId]
                     if (loan != null) {
-                        val total = loan.loanAmount + loan.interestAmount
-                        val ratio = if (total > 0.0) loan.interestAmount / total else 0.0
-                        p.amountPaid * ratio
+                        com.example.util.MoneyMath.realizedInterestShare(p.amountPaid, loan.loanAmount, loan.interestAmount)
                     } else {
                         0.0
                     }
@@ -5686,7 +6132,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 val sumPaid = finalPayments.filter { it.loanCycleId == loan.id && it.status.uppercase() != "DELETED" }.sumOf { it.amountPaid }
                 val targetAmount = loan.loanAmount + loan.interestAmount
                 val shouldBePaid = sumPaid >= targetAmount
-                val computedStatus = if (shouldBePaid) "PAID" else "ACTIVE"
+                val isSuspended = loan.status.equals("SUSPENDED", ignoreCase = true) || loan.status.equals("BAD_DEBT", ignoreCase = true)
+                val computedStatus = when {
+                    shouldBePaid -> "PAID"
+                    isSuspended -> "SUSPENDED"
+                    else -> "ACTIVE"
+                }
                 
                 if (loan.paidAmount != sumPaid || loan.status != computedStatus) {
                     db.collectionDao().updateLoanCycle(
@@ -6287,7 +6738,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     val sumPaid = finalPayments.filter { it.loanCycleId == loan.id && it.status.uppercase() != "DELETED" }.sumOf { it.amountPaid }
                     val targetAmount = loan.loanAmount + loan.interestAmount
                     val shouldBePaid = sumPaid >= targetAmount
-                    val computedStatus = if (shouldBePaid) "PAID" else "ACTIVE"
+                    val isSuspended = loan.status.equals("SUSPENDED", ignoreCase = true) || loan.status.equals("BAD_DEBT", ignoreCase = true)
+                    val computedStatus = when {
+                        shouldBePaid -> "PAID"
+                        isSuspended -> "SUSPENDED"
+                        else -> "ACTIVE"
+                    }
                     
                     if (loan.paidAmount != sumPaid || loan.status != computedStatus) {
                         db.collectionDao().updateLoanCycle(
@@ -7033,6 +7489,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun performLocalLogout() {
+        com.example.network.CloudLedgerSyncEngine.cancelActiveSyncJobs()
         prefs.edit().apply {
             putBoolean("is_logged_in", false)
             putString("current_user", "")

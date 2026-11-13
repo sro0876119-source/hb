@@ -12,10 +12,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 @Database(
     entities = [
         Customer::class, LoanCycle::class, WeeklyPayment::class, 
-        EditLog::class, CashBalanceLog::class,
-        CustomerEntity::class, TransactionEntity::class
+        EditLog::class, CashBalanceLog::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -120,6 +119,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_weekly_payments_loanCycleId_status_paymentDate` ON `weekly_payments` (`loanCycleId`, `status`, `paymentDate`)")
+                db.execSQL("DROP TABLE IF EXISTS `microfinance_customers`")
+                db.execSQL("DROP TABLE IF EXISTS `microfinance_transactions`")
+            }
+        }
+
 
         fun getDatabase(
             context: Context, 
@@ -193,7 +200,8 @@ abstract class AppDatabase : RoomDatabase() {
                                 MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, 
                                 MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, 
                                 MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
-                                MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16
+                                MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
+                                MIGRATION_16_17
                             )
                             .fallbackToDestructiveMigration(true)
                             .fallbackToDestructiveMigrationOnDowngrade(true)

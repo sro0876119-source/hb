@@ -228,9 +228,14 @@ data class AppThemeColors(
     val textOnHeader: Color = Color.White,
     val headerCardBg: List<Color> = listOf(Color(0xFF0F172A), Color(0xFF4F46E5)),
     val headerCardBorder: Color = Color.Transparent,
-    val todayCollectionBg: Color = Color(0xFF0D9488),
-    val todayDueCreatedBg: Color = Color(0xFF4F46E5),
-    val todayInterestBg: Color = Color(0xFF8B5CF6)
+    val todayCollectionBg: Color = Color(0xFF059669),
+    val todayDueCreatedBg: Color = Color(0xFF2563EB),
+    val todayInterestBg: Color = Color(0xFF4F46E5),
+    val deductionsBg: Color = Color(0xFF9333EA),
+    val cardBg: Color = Color(0xFFFFFFFF),
+    val cardBorder: Color = Color(0xFFE2E8F0),
+    val textPrimary: Color = Color(0xFF020617),
+    val textSecondary: Color = Color(0xFF475569)
 )
 
 val LocalAppThemeColors = staticCompositionLocalOf { AppThemeColors() }
@@ -239,7 +244,7 @@ val ColorGainGreen: Color @Composable get() = LocalAppThemeColors.current.second
 val ColorGainGreenLight: Color @Composable get() = LocalAppThemeColors.current.gainGreenLight
 val ColorLossRed: Color @Composable get() = LocalAppThemeColors.current.tertiaryAccent
 val ColorLossRedLight: Color @Composable get() = LocalAppThemeColors.current.lossRedLight
-val ColorCardBg: Color = Color(0xFFFFFBFE)
+val ColorCardBg: Color @Composable get() = LocalAppThemeColors.current.cardBg
 val ColorSlateDark: Color @Composable get() = LocalAppThemeColors.current.darkBg
 val ColorAccentBlue: Color @Composable get() = LocalAppThemeColors.current.primaryAccent
 
@@ -329,16 +334,71 @@ fun getThemeColors(themeName: String): AppThemeColors {
             lossRedLight = Color(0xFFFDF4F2),
             headerCardBg = listOf(Color(0xFF162A2B), Color(0xFF2A7B6B))
         )
-        else -> AppThemeColors( // Sleek Slate
-            mainBg = Color(0xFFF8FAFC),
+        "Sunlight Contrast", "Outdoor Sunlight High-Contrast" -> AppThemeColors(
+            mainBg = Color(0xFFE2E8F0),
             darkBg = Color(0xFF0F172A),
+            cardBg = Color(0xFFFFFFFF),
+            cardBorder = Color(0xFF94A3B8),
+            primaryAccent = Color(0xFF3730A3),
+            secondaryAccent = Color(0xFF15803D),
+            tertiaryAccent = Color(0xFFB91C1C),
+            gradientColors = listOf(Color(0xFF0F172A), Color(0xFF1E3A8A)),
+            gainGreenLight = Color(0xFFDCFCE7),
+            lossRedLight = Color(0xFFFEE2E2),
+            isDark = false,
+            textOnHeader = Color.White,
+            textPrimary = Color(0xFF000000),
+            textSecondary = Color(0xFF000000),
+            headerCardBg = listOf(Color(0xFF0F172A), Color(0xFF1E3A8A)),
+            headerCardBorder = Color(0xFF94A3B8),
+            todayCollectionBg = Color(0xFF15803D),
+            todayDueCreatedBg = Color(0xFF1D4ED8),
+            todayInterestBg = Color(0xFF3730A3),
+            deductionsBg = Color(0xFF7E22CE)
+        )
+        "Midnight AMOLED", "Stealth OLED" -> AppThemeColors(
+            mainBg = Color(0xFF000000),
+            darkBg = Color(0xFF0F172A),
+            cardBg = Color(0xFF111827),
+            cardBorder = Color(0xFF1F2937),
+            primaryAccent = Color(0xFF818CF8),
+            secondaryAccent = Color(0xFF10B981),
+            tertiaryAccent = Color(0xFFF87171),
+            gradientColors = listOf(Color(0xFF0F172A), Color(0xFF111827)),
+            gainGreenLight = Color(0xFF064E3B),
+            lossRedLight = Color(0xFF7F1D1D),
+            isDark = true,
+            textOnHeader = Color(0xFFF8FAFC),
+            textPrimary = Color(0xFFF8FAFC),
+            textSecondary = Color(0xFF94A3B8),
+            headerCardBg = listOf(Color(0xFF111827), Color(0xFF1F2937)),
+            headerCardBorder = Color(0xFF1F2937),
+            todayCollectionBg = Color(0xFF10B981),
+            todayDueCreatedBg = Color(0xFF38BDF8),
+            todayInterestBg = Color(0xFF818CF8),
+            deductionsBg = Color(0xFFC084FC)
+        )
+        else -> AppThemeColors( // Option 1: "Fintech Emerald" ("Fintech Emerald & Royal Slate" - Recommended)
+            mainBg = Color(0xFFF1F5F9),
+            darkBg = Color(0xFF0F172A),
+            cardBg = Color(0xFFFFFFFF),
+            cardBorder = Color(0xFFE2E8F0),
             primaryAccent = Color(0xFF4F46E5),
-            secondaryAccent = Color(0xFF0D9488),
-            tertiaryAccent = Color(0xFFEF4444),
-            gradientColors = listOf(Color(0xFF0F172A), Color(0xFF4F46E5)),
-            gainGreenLight = Color(0xFFF0FDF4),
+            secondaryAccent = Color(0xFF059669),
+            tertiaryAccent = Color(0xFFDC2626),
+            gradientColors = listOf(Color(0xFF0F172A), Color(0xFF1E293B)),
+            gainGreenLight = Color(0xFFECFDF5),
             lossRedLight = Color(0xFFFEF2F2),
-            headerCardBg = listOf(Color(0xFF0F172A), Color(0xFF4F46E5))
+            isDark = false,
+            textOnHeader = Color.White,
+            textPrimary = Color(0xFF020617),
+            textSecondary = Color(0xFF475569),
+            headerCardBg = listOf(Color(0xFF0F172A), Color(0xFF1E293B)),
+            headerCardBorder = Color.Transparent,
+            todayCollectionBg = Color(0xFF059669),
+            todayDueCreatedBg = Color(0xFF2563EB),
+            todayInterestBg = Color(0xFF4F46E5),
+            deductionsBg = Color(0xFF9333EA)
         )
     }
 }
@@ -672,6 +732,7 @@ fun WeeklyFinanceApp(
                                                     "firebase_dashboard" -> "Firebase Unified Operations"
                                                     "backup", "sync_backup" -> "Local Data Backups & Restore"
                                                     "audit" -> "System Audit Logs"
+                                                    "bad_debts" -> "Bad Debts (NPA Quarantine)"
                                                     "system_update", "system_updates" -> "System Auto-Update Settings"
                                                     "reset", "troubleshooting" -> "System Reset & Maintenance"
                                                     else -> "Settings"
@@ -776,7 +837,141 @@ fun WeeklyFinanceApp(
                                     if (customer != null) {
                                         var showMenu by remember { mutableStateOf(false) }
                                         var showDeleteCustomerDialog by remember { mutableStateOf(false) }
+                                        var showMoveBadDebtDialog by remember { mutableStateOf(false) }
+                                        var showMoveDayDialog by remember { mutableStateOf(false) }
                                         var deletingLoanCycleTarget by remember { mutableStateOf<Pair<LoanCycle, String>?>(null) }
+                                        val isCustomerInBadDebts = customer.status.equals("BAD_DEBT", ignoreCase = true)
+                                        val availableDays by viewModel.collectionGroups.collectAsStateWithLifecycle()
+
+                                        if (showMoveBadDebtDialog) {
+                                            AlertDialog(
+                                                onDismissRequest = { showMoveBadDebtDialog = false },
+                                                containerColor = Color.White,
+                                                titleContentColor = Color.Black,
+                                                textContentColor = Color.Black,
+                                                title = {
+                                                    Text(
+                                                        text = if (isCustomerInBadDebts) "Revive Customer to Active Route?" else "Move to Bad Debts (NPA Quarantine)?",
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color.Black
+                                                    )
+                                                },
+                                                text = {
+                                                    Text(
+                                                        text = if (isCustomerInBadDebts) {
+                                                            "Restore ${customer.name} back to ${customer.collectionDay}'s active collection route? Their suspended loans will be reactivated."
+                                                        } else {
+                                                            "Move ${customer.name} out of the ${customer.collectionDay} daily route into Bad Debts (NPA Quarantine)?\n\n• Removes them from the active daily route list\n• Reassigns their route number (#${customer.customOrder}) to the next member\n• Excludes their unpaid balance from active dashboard metrics\n• Preserves all loan & payment records in Settings -> Bad Debts"
+                                                        },
+                                                        color = Color(0xFF334155),
+                                                        fontSize = 14.sp
+                                                    )
+                                                },
+                                                confirmButton = {
+                                                    Button(
+                                                        onClick = {
+                                                            showMoveBadDebtDialog = false
+                                                            if (isCustomerInBadDebts) {
+                                                                viewModel.reviveCustomerFromBadDebts(customer.id)
+                                                            } else {
+                                                                viewModel.moveCustomerToBadDebts(customer.id) {
+                                                                    viewModel.navigateBack()
+                                                                }
+                                                            }
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = if (isCustomerInBadDebts) Color(0xFF059669) else Color(0xFFDC2626)
+                                                        )
+                                                    ) {
+                                                        Text(if (isCustomerInBadDebts) "Revive Customer" else "Move to Bad Debts", color = Color.White, fontWeight = FontWeight.Bold)
+                                                    }
+                                                },
+                                                dismissButton = {
+                                                    TextButton(onClick = { showMoveBadDebtDialog = false }) {
+                                                        Text(translate("Cancel", language), color = Color.Black)
+                                                    }
+                                                }
+                                            )
+                                        }
+
+                                        if (showMoveDayDialog) {
+                                            val validDays = remember(availableDays, customer.collectionDay) {
+                                                val baseDays = if (availableDays.isNotEmpty()) {
+                                                    availableDays.filter { !it.trim().equals("Friday", ignoreCase = true) }
+                                                } else {
+                                                    listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Saturday", "Sunday mrg", "Sunday eve")
+                                                }
+                                                baseDays
+                                            }
+                                            AlertDialog(
+                                                onDismissRequest = { showMoveDayDialog = false },
+                                                containerColor = Color.White,
+                                                titleContentColor = Color.Black,
+                                                textContentColor = Color.Black,
+                                                title = {
+                                                    Text(
+                                                        text = "Move ${customer.name} to Another Day",
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color.Black
+                                                    )
+                                                },
+                                                text = {
+                                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                        Text(
+                                                            text = "Current Group: ${customer.collectionDay} (Route #${customer.customOrder})\nSelect a new collection day:",
+                                                            fontSize = 13.sp,
+                                                            color = Color(0xFF475569)
+                                                        )
+                                                        validDays.forEach { dayOption ->
+                                                            val isCurrentDay = dayOption.trim().equals(customer.collectionDay.trim(), ignoreCase = true)
+                                                            OutlinedButton(
+                                                                onClick = {
+                                                                    if (!isCurrentDay) {
+                                                                        showMoveDayDialog = false
+                                                                        viewModel.moveCustomerToDayGroup(customer.id, dayOption)
+                                                                    }
+                                                                },
+                                                                enabled = !isCurrentDay,
+                                                                shape = RoundedCornerShape(10.dp),
+                                                                modifier = Modifier.fillMaxWidth()
+                                                            ) {
+                                                                Row(
+                                                                    modifier = Modifier.fillMaxWidth(),
+                                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                                    verticalAlignment = Alignment.CenterVertically
+                                                                ) {
+                                                                    Text(
+                                                                        text = dayOption,
+                                                                        fontWeight = FontWeight.Bold,
+                                                                        color = if (isCurrentDay) Color(0xFF94A3B8) else Color(0xFF0F172A)
+                                                                    )
+                                                                    if (isCurrentDay) {
+                                                                        Text(
+                                                                            text = "Current",
+                                                                            fontSize = 11.sp,
+                                                                            color = Color(0xFF94A3B8)
+                                                                        )
+                                                                    } else {
+                                                                        Icon(
+                                                                            imageVector = Icons.Default.SwapHoriz,
+                                                                            contentDescription = null,
+                                                                            tint = Color(0xFF2563EB),
+                                                                            modifier = Modifier.size(18.dp)
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                confirmButton = {},
+                                                dismissButton = {
+                                                    TextButton(onClick = { showMoveDayDialog = false }) {
+                                                        Text(translate("Close", language), color = Color.Black)
+                                                    }
+                                                }
+                                            )
+                                        }
 
                                         if (showDeleteCustomerDialog) {
                                             AlertDialog(
@@ -842,7 +1037,10 @@ fun WeeklyFinanceApp(
                                         }
 
                                         Box {
-                                            IconButton(onClick = { showMenu = true }) {
+                                            IconButton(
+                                                onClick = { showMenu = true },
+                                                modifier = Modifier.testTag("customer_detail_more_options_button")
+                                            ) {
                                                 Icon(
                                                     imageVector = Icons.Default.MoreVert,
                                                     contentDescription = "Customer Actions",
@@ -862,6 +1060,41 @@ fun WeeklyFinanceApp(
                                                         viewModel.navigateTo(Screen.EditCustomer(custId))
                                                     }
                                                 )
+
+                                                // Move Customer to Another Day
+                                                DropdownMenuItem(
+                                                    text = { Text("Move (${customer.collectionDay} ➔ Another Day)") },
+                                                    leadingIcon = { Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFF2563EB), modifier = Modifier.size(16.dp)) },
+                                                    onClick = {
+                                                        showMenu = false
+                                                        showMoveDayDialog = true
+                                                    },
+                                                    modifier = Modifier.testTag("menu_move_customer_day")
+                                                )
+
+                                                // Move to Bad Debts OR Revive Customer
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = if (isCustomerInBadDebts) "Revive Customer" else "Move to Bad Debts",
+                                                            color = if (isCustomerInBadDebts) Color(0xFF059669) else Color(0xFFD97706),
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = if (isCustomerInBadDebts) Icons.Default.Restore else Icons.Default.ReportProblem,
+                                                            contentDescription = null,
+                                                            tint = if (isCustomerInBadDebts) Color(0xFF059669) else Color(0xFFD97706),
+                                                            modifier = Modifier.size(16.dp)
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        showMenu = false
+                                                        showMoveBadDebtDialog = true
+                                                    },
+                                                    modifier = Modifier.testTag("menu_toggle_bad_debt")
+                                                )
                                                 
                                                 val customerLoans = allLoanCycles
                                                     .filter { it.customerId == custId && it.status.uppercase() != "DELETED" }
@@ -871,9 +1104,9 @@ fun WeeklyFinanceApp(
                                                     HorizontalDivider()
                                                     customerLoans.forEachIndexed { index, loan ->
                                                         val activeLoansCount = customerLoans.count { it.status == "ACTIVE" }
-                                                        val label = if (loan.status == "ACTIVE") { if (customerLoans.count { it.status == "ACTIVE" } <= 1) "Loan" else "Loan ${customerLoans.filter { it.status == "ACTIVE" }.indexOfFirst { it.id == loan.id } + 1}" } else { "Closed Loan ${customerLoans.filter { it.status != "ACTIVE" }.indexOfFirst { it.id == loan.id } + 1}" }
+                                                        val label = if (loan.status == "ACTIVE") { if (activeLoansCount <= 1) "Loan" else "Loan ${customerLoans.filter { it.status == "ACTIVE" }.indexOfFirst { it.id == loan.id } + 1}" } else { "Closed Loan ${customerLoans.filter { it.status != "ACTIVE" }.indexOfFirst { it.id == loan.id } + 1}" }
                                                         val isLoanActive = loan.status == "ACTIVE"
-                                                        val statusLabel = if (isLoanActive) "Active" else "Settled"
+                                                        val statusLabel = com.example.util.StatementGenerator.resolveDisplayLoanStatus(loan.status, !isLoanActive)
                                                         
                                                         if (isLoanActive) {
                                                         DropdownMenuItem(

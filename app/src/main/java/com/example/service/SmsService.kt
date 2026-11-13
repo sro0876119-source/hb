@@ -37,11 +37,16 @@ object SmsService {
             showToast(context, "All outgoing SMS notifications are temporarily PAUSED globally in Settings.", Toast.LENGTH_LONG)
             return
         }
-        var cleanPhone = phone.replace("+", "").replace(" ", "").trim()
-        if (!cleanPhone.startsWith("91")) {
-            cleanPhone = "91$cleanPhone"
+        val rawTrimmed = phone.trim()
+        val digitsOnly = rawTrimmed.filter { it.isDigit() }
+        val formattedPhone = when {
+            rawTrimmed.startsWith("+") && digitsOnly.length >= 10 -> "+$digitsOnly"
+            digitsOnly.length == 12 && digitsOnly.startsWith("91") -> "+$digitsOnly"
+            digitsOnly.length == 11 && digitsOnly.startsWith("0") -> "+91${digitsOnly.substring(1)}"
+            digitsOnly.length == 10 -> "+91$digitsOnly"
+            digitsOnly.isNotEmpty() -> "+$digitsOnly"
+            else -> rawTrimmed
         }
-        val formattedPhone = "+$cleanPhone"
 
 
 

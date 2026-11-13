@@ -47,9 +47,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.Customer
 import com.example.data.LoanCycle
 import com.example.data.WeeklyPayment
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import com.example.util.CurrencyFormatter
 import com.example.util.CalendarWeek
 import com.example.util.DateUtils
+import com.example.util.MoneyMath
 import com.example.util.StatementGenerator
 
 import java.text.SimpleDateFormat
@@ -1134,7 +1138,7 @@ fun CustomerDetailScreen(
     val activeLoans = liveLoanCycles.filter { it.status == "ACTIVE" }
     val paidHistory = remember(liveLoanCycles) {
         liveLoanCycles.filter { lc ->
-            (lc.status == "PAID" || lc.status == "CLOSED") && lc.status.uppercase() != "DELETED"
+            (lc.status == "PAID" || lc.status == "CLOSED" || lc.status == "SUSPENDED") && lc.status.uppercase() != "DELETED"
         }.sortedByDescending { it.startDate }
     }
 
@@ -1143,6 +1147,9 @@ fun CustomerDetailScreen(
     var isGeneratingStatement by remember { mutableStateOf(false) }
     var showStatementChooserDialog by remember { mutableStateOf(false) }
     var pendingStatementRequest by remember { mutableStateOf<Pair<LoanCycle, Boolean>?>(null) }
+    var generatedStatementModalData by remember {
+        mutableStateOf<Triple<android.graphics.Bitmap, LoanCycle, String>?>(null)
+    }
 
     val executeGenerateAndShareStatement: (LoanCycle, Boolean, String) -> Unit = { targetLoan, isClosed, targetPhone ->
         coroutineScope.launch {
@@ -1166,13 +1173,7 @@ fun CustomerDetailScreen(
                     customerPhone = targetPhone,
                     isClosedLoan = isClosed
                 )
-                shareStatementImageToWhatsapp(
-                    context = context,
-                    bitmap = statementBitmap,
-                    customerName = customer.name,
-                    phoneNumber = targetPhone,
-                    isClosedLoan = isClosed
-                )
+                generatedStatementModalData = Triple(statementBitmap, targetLoan, targetPhone)
             } catch (e: Exception) {
                 Toast.makeText(context, "Error generating statement: ${e.message}", Toast.LENGTH_SHORT).show()
             } finally {
@@ -1187,6 +1188,184 @@ fun CustomerDetailScreen(
         } else {
             executeGenerateAndShareStatement(targetLoan, isClosed, primaryPhone)
         }
+    }
+
+    if (generatedStatementModalData != null) {
+        val (stmtBitmap, stmtLoan, stmtPhone) = generatedStatementModalData!!
+        val isClosedOrSuspended = stmtLoan.status.equals("PAID", ignoreCase = true) ||
+            stmtLoan.status.equals("CLOSED", ignoreCase = true) ||
+            stmtLoan.status.equals("SUSPENDED", ignoreCase = true)
+        val displayStatus = StatementGenerator.resolveDisplayLoanStatus(stmtLoan.status, isClosedOrSuspended)
+        val stmtPayments = remember(allPayments, stmtLoan.id) {
+            allPayments.filter {
+                it.loanCycleId == stmtLoan.id &&
+                    it.status.uppercase() != "DELETED" &&
+                    it.amountPaid > 0.0
+            }.sortedWith(compareBy<WeeklyPayment> { it.paymentDate }.thenBy { it.weekNumber })
+        }
+
+        AlertDialog(
+            onDismissRequest = { generatedStatementModalData = null },
+            containerColor = Color.White,
+            titleContentColor = ColorSlateDark,
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Account Statement Ready",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = ColorSlateDark
+                        )
+                        Text(
+                            text = "${customer.name} • Status: $displayStatus",
+                            fontSize = 11.sp,
+                            color = if (displayStatus == "SUSPENDED") ColorLossRed else Color.Gray,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    IconButton(onClick = { generatedStatementModalData = null }) {
+                        Icon(Icons.Default.Close, contentDescription = "Close Statement Modal", tint = Color.Gray)
+                    }
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Statement image preview box
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                    ) {
+                        Image(
+                            bitmap = stmtBitmap.asImageBitmap(),
+                            contentDescription = "Account Statement Preview",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(6.dp)
+                        )
+                    }
+
+                    Text(
+                        text = "Choose how to share or save this statement:",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorSlateDark
+                    )
+
+                    // 2x2 Action Grid: Share via WhatsApp, Share via SMS, Save Statement, Download to Device
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                StatementGenerator.shareStatementViaWhatsApp(
+                                    context = context,
+                                    bitmap = stmtBitmap,
+                                    customerName = customer.name,
+                                    customerPhone = stmtPhone,
+                                    captionText = "Account Statement for ${customer.name} (Status: $displayStatus)"
+                                )
+                                generatedStatementModalData = null
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("stmt_action_whatsapp")
+                        ) {
+                            Icon(WhatsAppIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Share WhatsApp", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                        }
+
+                        Button(
+                            onClick = {
+                                StatementGenerator.shareStatementViaSms(
+                                    context = context,
+                                    customerName = customer.name,
+                                    customerPhone = stmtPhone,
+                                    loan = stmtLoan,
+                                    payments = stmtPayments,
+                                    businessName = viewModel.businessName.value,
+                                    isClosedLoan = isClosedOrSuspended
+                                )
+                                generatedStatementModalData = null
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("stmt_action_sms")
+                        ) {
+                            Icon(Icons.Default.Sms, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Share via SMS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                StatementGenerator.saveStatementInternally(
+                                    context = context,
+                                    bitmap = stmtBitmap,
+                                    customerName = customer.name
+                                )
+                            },
+                            border = BorderStroke(1.5.dp, Color(0xFF4F46E5)),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("stmt_action_save")
+                        ) {
+                            Icon(Icons.Default.BookmarkAdded, contentDescription = null, tint = Color(0xFF4F46E5), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Save Statement", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4F46E5), maxLines = 1)
+                        }
+
+                        Button(
+                            onClick = {
+                                StatementGenerator.downloadStatementToDevice(
+                                    context = context,
+                                    bitmap = stmtBitmap,
+                                    customerName = customer.name
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A)),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("stmt_action_download")
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Download PNG", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                        }
+                    }
+                }
+            },
+            confirmButton = {}
+        )
     }
 
     if (pendingStatementRequest != null) {
@@ -1459,6 +1638,55 @@ fun CustomerDetailScreen(
                 .verticalScroll(scrollState)
                 .padding(16.dp)
         ) {
+        if (customer.status.equals("BAD_DEBT", ignoreCase = true)) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.5.dp, Color(0xFFDC2626)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "NPA QUARANTINE • BAD DEBT ACCOUNT",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFFDC2626)
+                        )
+                        Text(
+                            text = "Removed from active ${customer.collectionDay} route & dashboard totals.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF7F1D1D)
+                        )
+                    }
+                    if (currentUserRole != "USER") {
+                        Button(
+                            onClick = {
+                                viewModel.reviveCustomerFromBadDebts(customer.id) {
+                                    Toast.makeText(context, "${customer.name} revived to ${customer.collectionDay} route!", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Restore, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Revive", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+            }
+        }
+
         // Visual indicator showing previous/next customer for convenient switching
         if (prevCustomerName != null || nextCustomerName != null) {
             Row(
@@ -1640,22 +1868,46 @@ fun CustomerDetailScreen(
                             }
                         }
 
-                        if (activeLoan.id != -1 && activeLoans.size > 1) {
-                            val loanIndex = allCustomerLoans.indexOfFirst { it.id == activeLoan.id }
-                            Box(
+                        val favoriteUuids by viewModel.favoriteCustomerUuids.collectAsStateWithLifecycle()
+                        val isFavorite = customer.uuid.isNotBlank() && favoriteUuids.contains(customer.uuid)
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    viewModel.toggleFavoriteCustomer(customer.uuid)
+                                },
                                 modifier = Modifier
-                                    .wrapContentWidth()
-                                    .background(Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
-                                    .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    .size(34.dp)
+                                    .testTag("toggle_favorite_customer")
                             ) {
-                                Text(
-                                    text = "Loan ${loanIndex + 1}",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = appColors.textOnHeader,
-                                    maxLines = 1
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                                    contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
+                                    tint = if (isFavorite) Color(0xFFFBBF24) else appColors.textOnHeader.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(22.dp)
                                 )
+                            }
+
+                            if (activeLoan.id != -1 && activeLoans.size > 1) {
+                                val loanIndex = allCustomerLoans.indexOfFirst { it.id == activeLoan.id }
+                                Box(
+                                    modifier = Modifier
+                                        .wrapContentWidth()
+                                        .background(Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                        .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                ) {
+                                    Text(
+                                        text = "Loan ${loanIndex + 1}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = appColors.textOnHeader,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     }
@@ -2101,13 +2353,123 @@ fun CustomerDetailScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = loanLabel,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp,
-                                    color = appColors.primaryAccent,
-                                    modifier = Modifier.padding(bottom = 8.dp)
-                                )
+                                var activeLoanMenuExpanded by remember { mutableStateOf(false) }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = loanLabel,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 16.sp,
+                                            color = appColors.primaryAccent
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .background(ColorGainGreenLight, RoundedCornerShape(6.dp))
+                                                .border(1.dp, ColorGainGreen.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "ACTIVE",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = ColorGainGreen
+                                            )
+                                        }
+                                    }
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        IconButton(
+                                            onClick = { generateAndShareStatement(targetActiveLoan, false) },
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .testTag("active_loan_statement_btn_${targetActiveLoan.id}")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.ListAlt,
+                                                contentDescription = "Generate Statement",
+                                                tint = Color(0xFFFBBF24),
+                                                modifier = Modifier.size(19.dp)
+                                            )
+                                        }
+
+                                        Box {
+                                            IconButton(
+                                                onClick = { activeLoanMenuExpanded = true },
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .testTag("active_loan_more_menu_${targetActiveLoan.id}")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.MoreVert,
+                                                    contentDescription = "Active Loan Options",
+                                                    tint = ColorSlateDark,
+                                                    modifier = Modifier.size(19.dp)
+                                                )
+                                            }
+                                            DropdownMenu(
+                                                expanded = activeLoanMenuExpanded,
+                                                onDismissRequest = { activeLoanMenuExpanded = false }
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Generate Statement", fontWeight = FontWeight.SemiBold) },
+                                                    leadingIcon = { Icon(Icons.Filled.ListAlt, contentDescription = null, tint = Color(0xFFF59E0B)) },
+                                                    onClick = {
+                                                        activeLoanMenuExpanded = false
+                                                        generateAndShareStatement(targetActiveLoan, false)
+                                                    }
+                                                )
+                                                if (currentUserRole != "USER") {
+                                                    DropdownMenuItem(
+                                                        text = { Text("Mark as Closed (Settled)") },
+                                                        leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null, tint = ColorGainGreen) },
+                                                        onClick = {
+                                                            activeLoanMenuExpanded = false
+                                                            viewModel.updateLoanCycleStatus(targetActiveLoan.id, "CLOSED")
+                                                            Toast.makeText(context, "Loan marked as Closed", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Suspend Loan (Bad Debt)", color = ColorLossRed, fontWeight = FontWeight.SemiBold) },
+                                                        leadingIcon = { Icon(Icons.Default.ReportProblem, contentDescription = null, tint = ColorLossRed) },
+                                                        onClick = {
+                                                            activeLoanMenuExpanded = false
+                                                            viewModel.updateLoanCycleStatus(targetActiveLoan.id, "SUSPENDED")
+                                                            Toast.makeText(context, "Loan marked as Suspended (Bad Debt)", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Edit Loan Details") },
+                                                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                                        onClick = {
+                                                            activeLoanMenuExpanded = false
+                                                            viewModel.navigateTo(Screen.EditLoan(targetActiveLoan.id))
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Delete Loan", color = ColorLossRed) },
+                                                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = ColorLossRed) },
+                                                        onClick = {
+                                                            activeLoanMenuExpanded = false
+                                                            deletingCycleTarget = targetActiveLoan
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 ActiveLoanSection(
                                     activeLoan = targetActiveLoan,
                                     payments = activePayments,
@@ -2173,6 +2535,10 @@ fun CustomerDetailScreen(
                             onDeletePayment = { payment -> deletingPaymentTarget = payment },
                             onAddPayment = { viewModel.navigateTo(Screen.RecordPayment(historicCycle.id)) },
                             onShareClicked = { generateAndShareStatement(historicCycle, true) },
+                            onStatusChange = { newStatus ->
+                                viewModel.updateLoanCycleStatus(historicCycle.id, newStatus)
+                                Toast.makeText(context, "Loan status updated to $newStatus", Toast.LENGTH_SHORT).show()
+                            },
                             currentUserRole = currentUserRole,
                             loanLabel = loanLabel
                         )
@@ -2770,19 +3136,20 @@ fun UnpaidWeekBubbleRow(
     onDeleteExplicit: (() -> Unit)?,
     currentUserRole: String = "ADMIN"
 ) {
-    val orangeText = Color(0xFFEA580C)
-    val orangeBorder = Color(0xFFFED7AA)
-    val orangeBg = Color(0xFFFFF7ED)
+    val redBg = Color(0xFFFEF2F2)
+    val redBorder = ColorLossRed.copy(alpha = 0.30f)
     val dateStr = remember(unpaidDateMillis) {
         SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(unpaidDateMillis))
     }
 
     Card(
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        colors = CardDefaults.cardColors(containerColor = orangeBg),
+        colors = CardDefaults.cardColors(containerColor = redBg),
         shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, orangeBorder),
-        modifier = Modifier.fillMaxWidth()
+        border = BorderStroke(1.dp, redBorder),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("unpaid_week_row_$unpaidDateMillis")
     ) {
         Row(
             modifier = Modifier
@@ -2805,29 +3172,50 @@ fun UnpaidWeekBubbleRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                // Paid ₹0 and Date side-by-side on the left
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Box(
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "₹0",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = ColorLossRed
+                        )
+                        Text(
+                            text = "Paid",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ColorLossRed.copy(alpha = 0.85f)
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .background(orangeText.copy(alpha = 0.14f), RoundedCornerShape(6.dp))
-                            .border(1.dp, orangeText.copy(alpha = 0.25f), RoundedCornerShape(6.dp))
+                            .background(ColorLossRed.copy(alpha = 0.10f), RoundedCornerShape(6.dp))
+                            .border(1.dp, ColorLossRed.copy(alpha = 0.25f), RoundedCornerShape(6.dp))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.DateRange,
+                            contentDescription = null,
+                            tint = ColorLossRed.copy(alpha = 0.8f),
+                            modifier = Modifier.size(11.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = dateStr,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = orangeText
+                            color = ColorLossRed
                         )
                     }
-                    Text(
-                        text = "Not Paid",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = ColorLossRed
-                    )
                 }
 
                 if (explicitPayment != null && onDeleteExplicit != null && currentUserRole != "USER") {
@@ -2844,6 +3232,14 @@ fun UnpaidWeekBubbleRow(
                     }
                 }
             }
+
+            // Right continuous vertical red border bar matching the paid week green border design
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(6.dp)
+                    .background(ColorLossRed)
+            )
         }
     }
 }
@@ -3049,11 +3445,16 @@ fun HistoricLoanCard(
     onDeletePayment: (WeeklyPayment) -> Unit,
     onAddPayment: () -> Unit,
     onShareClicked: (() -> Unit)? = null,
+    onStatusChange: ((String) -> Unit)? = null,
     currentUserRole: String = "ADMIN",
     loanLabel: String = "Loan"
 ) {
     val totalPaid = historicCycle.paidAmount
     val totalExpected = historicCycle.loanAmount + historicCycle.interestAmount
+    val isSuspended = historicCycle.status.equals("SUSPENDED", ignoreCase = true)
+    val statusBadgeText = if (isSuspended) "SUSPENDED" else "CLOSED"
+    val statusBadgeColor = if (isSuspended) ColorLossRed else ColorGainGreen
+    val statusBadgeBg = if (isSuspended) Color(0xFFFEF2F2) else ColorGainGreenLight
     
     val lastPayment = payments.maxByOrNull { it.paymentDate }
     val lastPaymentDate = lastPayment?.paymentDate ?: historicCycle.lastModified
@@ -3106,37 +3507,38 @@ fun HistoricLoanCard(
     }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+        colors = CardDefaults.cardColors(containerColor = if (isSuspended) Color(0xFFFEF2F2) else Color(0xFFF8FAFC)),
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        border = BorderStroke(1.dp, if (isSuspended) Color(0xFFFECACA) else Color(0xFFE2E8F0)),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             // Top Row: Header & Badges
+            var menuExpanded by remember { mutableStateOf(false) }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Settled $loanLabel",
+                            text = if (isSuspended) "Bad Debt $loanLabel" else "Closed $loanLabel",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
-                            color = ColorGainGreen
+                            color = statusBadgeColor
                         )
                         Box(
                             modifier = Modifier
-                                .background(ColorGainGreenLight, RoundedCornerShape(6.dp))
-                                .border(1.dp, ColorGainGreen.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
+                                .background(statusBadgeBg, RoundedCornerShape(6.dp))
+                                .border(1.dp, statusBadgeColor.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = "PAID",
+                                text = statusBadgeText,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = ColorGainGreen
+                                color = statusBadgeColor
                             )
                         }
                     }
@@ -3147,7 +3549,7 @@ fun HistoricLoanCard(
                     )
                 }
                 
-                // Top Right: 6-Month Retention Status badge, Share Statement & Delete button
+                // Top Right: 6-Month Retention Status badge, Statement Icon & 3-Dot Menu
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Box(
                         modifier = Modifier
@@ -3170,13 +3572,85 @@ fun HistoricLoanCard(
                         )
                     }
                     if (onShareClicked != null) {
-                        IconButton(onClick = onShareClicked, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Filled.ListAlt, contentDescription = "Share Closed Statement", tint = Color(0xFFFBBF24), modifier = Modifier.size(18.dp))
+                        IconButton(
+                            onClick = onShareClicked,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("historic_loan_statement_btn_${historicCycle.id}")
+                        ) {
+                            Icon(Icons.Filled.ListAlt, contentDescription = "Generate Statement", tint = Color(0xFFFBBF24), modifier = Modifier.size(18.dp))
                         }
                     }
-                    if (effectiveRole != "USER") {
-                        IconButton(onClick = onDeleteLoan, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete past loan", tint = ColorLossRed, modifier = Modifier.size(16.dp))
+                    Box {
+                        IconButton(
+                            onClick = { menuExpanded = true },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("historic_loan_more_menu_${historicCycle.id}")
+                        ) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Loan Options", tint = ColorSlateDark, modifier = Modifier.size(18.dp))
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
+                            if (onShareClicked != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Generate Statement", fontWeight = FontWeight.SemiBold) },
+                                    leadingIcon = { Icon(Icons.Filled.ListAlt, contentDescription = null, tint = Color(0xFFF59E0B)) },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onShareClicked()
+                                    }
+                                )
+                            }
+                            if (currentUserRole != "USER" && onStatusChange != null) {
+                                if (!isSuspended) {
+                                    DropdownMenuItem(
+                                        text = { Text("Mark as Suspended (Bad Debt)", color = ColorLossRed) },
+                                        leadingIcon = { Icon(Icons.Default.ReportProblem, contentDescription = null, tint = ColorLossRed) },
+                                        onClick = {
+                                            menuExpanded = false
+                                            onStatusChange("SUSPENDED")
+                                        }
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = { Text("Mark as Closed (Settled)", color = ColorGainGreen) },
+                                        leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null, tint = ColorGainGreen) },
+                                        onClick = {
+                                            menuExpanded = false
+                                            onStatusChange("CLOSED")
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Reactivate to Active Loan") },
+                                    leadingIcon = { Icon(Icons.Default.Restore, contentDescription = null, tint = ColorAccentBlue) },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onStatusChange("ACTIVE")
+                                    }
+                                )
+                            }
+                            if (effectiveRole != "USER") {
+                                DropdownMenuItem(
+                                    text = { Text("Edit Loan Details") },
+                                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onEditLoan()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete Loan", color = ColorLossRed) },
+                                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = ColorLossRed) },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onDeleteLoan()
+                                    }
+                                )
+                            }
                         }
                     }
                 }

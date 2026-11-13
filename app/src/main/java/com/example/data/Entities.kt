@@ -69,7 +69,10 @@ data class LoanCycle(
             onDelete = ForeignKey.CASCADE
         )
     ],
-    indices = [Index(value = ["loanCycleId"])]
+    indices = [
+        Index(value = ["loanCycleId"]),
+        Index(value = ["loanCycleId", "status", "paymentDate"])
+    ]
 )
 data class WeeklyPayment(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
@@ -109,27 +112,5 @@ data class CashBalanceLog(
     val notes: String = ""
 )
 
-@Entity(tableName = "microfinance_customers")
-data class CustomerEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val name: String,
-    val phone: String,
-    val city: String,
-    val route: String,
-    val lastModified: Long = System.currentTimeMillis()
-) {
-    fun copyWithUpdatedPayment(weekNum: Int, pDate: Long, pMode: String): CustomerEntity {
-        return this.copy(lastModified = System.currentTimeMillis())
-    }
-}
-
-@Entity(tableName = "microfinance_transactions")
-data class TransactionEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val customerId: Int,
-    val amount: Double,
-    val date: Long = System.currentTimeMillis(),
-    val type: String = "PAYMENT"
-)
 
 
